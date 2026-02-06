@@ -1,0 +1,6 @@
+{
+  "manifest_version": 3,
+  "name": "My Adblocker",
+  "version": "1.0.0",
+  "description": "A Manifest V3 ad blocker with network rules and cosmetic filtering."
+}
