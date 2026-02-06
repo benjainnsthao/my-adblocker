@@ -1,1 +1,130 @@
-[]
+[
+  {
+    "id": 1000,
+    "priority": 2,
+    "action": { "type": "block" },
+    "condition": {
+      "requestDomains": ["google-analytics.com"],
+      "resourceTypes": ["script", "image", "sub_frame", "xmlhttprequest", "ping", "websocket"]
+    }
+  },
+  {
+    "id": 1001,
+    "priority": 2,
+    "action": { "type": "block" },
+    "condition": {
+      "requestDomains": ["googletagmanager.com"],
+      "resourceTypes": ["script", "image", "xmlhttprequest", "ping"]
+    }
+  },
+  {
+    "id": 1002,
+    "priority": 2,
+    "action": { "type": "block" },
+    "condition": {
+      "requestDomains": ["scorecardresearch.com"],
+      "resourceTypes": ["script", "image", "sub_frame", "xmlhttprequest", "ping", "websocket"]
+    }
+  },
+  {
+    "id": 1003,
+    "priority": 2,
+    "action": { "type": "block" },
+    "condition": {
+      "requestDomains": ["quantserve.com"],
+      "resourceTypes": ["script", "image", "sub_frame", "xmlhttprequest", "ping", "websocket"]
+    }
+  },
+  {
+    "id": 1004,
+    "priority": 2,
+    "action": { "type": "block" },
+    "condition": {
+      "requestDomains": ["moatads.com"],
+      "resourceTypes": ["script", "image", "sub_frame", "xmlhttprequest", "ping", "websocket"]
+    }
+  },
+  {
+    "id": 1005,
+    "priority": 2,
+    "action": { "type": "block" },
+    "condition": {
+      "requestDomains": ["doubleverify.com"],
+      "resourceTypes": ["script", "image", "sub_frame", "xmlhttprequest", "ping", "websocket"]
+    }
+  },
+  {
+    "id": 1006,
+    "priority": 2,
+    "action": { "type": "block" },
+    "condition": {
+      "requestDomains": ["adsafeprotected.com"],
+      "resourceTypes": ["script", "image", "sub_frame", "xmlhttprequest", "ping", "websocket"]
+    }
+  },
+  {
+    "id": 1007,
+    "priority": 2,
+    "action": { "type": "block" },
+    "condition": {
+      "requestDomains": ["hotjar.com"],
+      "resourceTypes": ["script", "image", "sub_frame", "xmlhttprequest", "ping", "websocket"]
+    }
+  },
+  {
+    "id": 1008,
+    "priority": 2,
+    "action": { "type": "block" },
+    "condition": {
+      "requestDomains": ["mouseflow.com"],
+      "resourceTypes": ["script", "image", "sub_frame", "xmlhttprequest", "ping", "websocket"]
+    }
+  },
+  {
+    "id": 1009,
+    "priority": 2,
+    "action": { "type": "block" },
+    "condition": {
+      "requestDomains": ["fullstory.com"],
+      "resourceTypes": ["script", "image", "sub_frame", "xmlhttprequest", "ping", "websocket"]
+    }
+  },
+  {
+    "id": 1010,
+    "priority": 2,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "*/tracking/*",
+      "resourceTypes": ["script", "image", "xmlhttprequest", "ping"]
+    }
+  },
+  {
+    "id": 1011,
+    "priority": 2,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "*/pixel.gif",
+      "resourceTypes": ["image"]
+    }
+  },
+  {
+    "id": 1012,
+    "priority": 2,
+    "action": { "type": "block" },
+    "condition": {
+      "requestDomains": ["connect.facebook.net"],
+      "urlFilter": "fbevents.js",
+      "resourceTypes": ["script"]
+    }
+  },
+  {
+    "id": 1013,
+    "priority": 2,
+    "action": { "type": "block" },
+    "condition": {
+      "requestDomains": ["facebook.com"],
+      "urlFilter": "*/tr*",
+      "resourceTypes": ["image", "xmlhttprequest", "ping"]
+    }
+  }
+]

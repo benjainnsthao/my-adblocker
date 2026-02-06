@@ -1,1 +1,56 @@
-[]
+[
+  {
+    "id": 2000,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "requestDomains": ["popads.net"],
+      "resourceTypes": ["script", "image", "sub_frame", "xmlhttprequest", "media", "stylesheet", "font", "ping", "websocket"]
+    }
+  },
+  {
+    "id": 2001,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "requestDomains": ["popcash.net"],
+      "resourceTypes": ["script", "image", "sub_frame", "xmlhttprequest", "media", "stylesheet", "font", "ping", "websocket"]
+    }
+  },
+  {
+    "id": 2002,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "requestDomains": ["propellerads.com"],
+      "resourceTypes": ["script", "image", "sub_frame", "xmlhttprequest", "media", "stylesheet", "font", "ping", "websocket"]
+    }
+  },
+  {
+    "id": 2003,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "requestDomains": ["revcontent.com"],
+      "resourceTypes": ["script", "image", "sub_frame", "xmlhttprequest", "media", "stylesheet", "font", "ping", "websocket"]
+    }
+  },
+  {
+    "id": 2004,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "requestDomains": ["mgid.com"],
+      "resourceTypes": ["script", "image", "sub_frame", "xmlhttprequest", "media", "stylesheet", "font", "ping", "websocket"]
+    }
+  },
+  {
+    "id": 2005,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "requestDomains": ["zergnet.com"],
+      "resourceTypes": ["script", "image", "sub_frame", "xmlhttprequest", "media", "stylesheet", "font", "ping", "websocket"]
+    }
+  }
+]
