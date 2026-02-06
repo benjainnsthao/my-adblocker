@@ -23,10 +23,6 @@ A Manifest V3 Chrome/Edge extension that blocks ads via network rules and cosmet
 - `rules/` - Network blocking rules
 - `popup/` - Extension popup UI
 
-## Development Roadmap
-See [adblocker_1.md](adblocker_1.md) for the MVP roadmap.
-See [adblocker_2.md](adblocker_2.md) for advanced features.
-
 ## Contributing
 Pull requests welcome! Please open an issue first to discuss changes.
 
