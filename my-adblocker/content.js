@@ -48,14 +48,18 @@ const AD_SELECTORS = [
 ];
 
 // ── CSS injection (fast initial blocking) ───────────────────────────
-const style = document.createElement('style');
-style.id = 'adblocker-cosmetic';
-style.textContent = AD_SELECTORS.map(s =>
-  `${s}{display:none!important;visibility:hidden!important;opacity:0!important;` +
-  `height:0!important;overflow:hidden!important;margin:0!important;padding:0!important;` +
-  `pointer-events:none!important}`
-).join('');
-document.documentElement.appendChild(style);
+try {
+  const style = document.createElement('style');
+  style.id = 'adblocker-cosmetic';
+  style.textContent = AD_SELECTORS.map(s =>
+    `${s}{display:none!important;visibility:hidden!important;opacity:0!important;` +
+    `height:0!important;overflow:hidden!important;margin:0!important;padding:0!important;` +
+    `pointer-events:none!important}`
+  ).join('');
+  document.documentElement.appendChild(style);
+} catch (err) {
+  console.error('[AdBlocker] CSS injection failed:', err.message);
+}
 
 // ── Direct element hiding ───────────────────────────────────────────
 const processedNodes = new WeakSet();
@@ -84,25 +88,37 @@ function hideElements(root) {
 }
 
 // Run immediately at document_start
-hideElements(document);
+try {
+  hideElements(document);
+} catch (err) {
+  console.error('[AdBlocker] Initial element hiding failed:', err.message);
+}
 
 // ── MutationObserver (catch dynamically injected ads) ───────────────
-let debounceTimer = null;
+try {
+  let debounceTimer = null;
 
-const observer = new MutationObserver((mutations) => {
-  if (debounceTimer) return;
-  debounceTimer = setTimeout(() => {
-    debounceTimer = null;
-    if (typeof requestIdleCallback === 'function') {
-      requestIdleCallback(() => hideElements(document));
-    } else {
-      hideElements(document);
-    }
-  }, 100);
-});
+  const observer = new MutationObserver((mutations) => {
+    if (debounceTimer) return;
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      try {
+        if (typeof requestIdleCallback === 'function') {
+          requestIdleCallback(() => hideElements(document));
+        } else {
+          hideElements(document);
+        }
+      } catch (err) {
+        console.error('[AdBlocker] MutationObserver callback failed:', err.message);
+      }
+    }, 100);
+  });
 
-// Observe as early as possible (document_start means documentElement exists)
-observer.observe(document.documentElement, {
-  childList: true,
-  subtree: true
-});
+  // Observe as early as possible (document_start means documentElement exists)
+  observer.observe(document.documentElement, {
+    childList: true,
+    subtree: true
+  });
+} catch (err) {
+  console.error('[AdBlocker] MutationObserver setup failed:', err.message);
+}

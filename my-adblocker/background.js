@@ -181,6 +181,16 @@ async function handleMessage(message, sender) {
       return stats;
     }
 
+    case 'getErrorLog': {
+      const data = await chrome.storage.local.get('errorLog');
+      return { errorLog: data.errorLog || [] };
+    }
+
+    case 'clearErrorLog': {
+      await chrome.storage.local.set({ errorLog: [] });
+      return { success: true };
+    }
+
     default:
       return { error: 'Unknown message type' };
   }
