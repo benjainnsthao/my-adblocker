@@ -2,6 +2,12 @@ const RULESET_IDS = ['ads', 'tracking', 'annoyances'];
 const STORAGE_SCHEMA_VERSION = 1;
 const WHITELIST_RULE_ID_START = 5000;
 const WHITELIST_RULE_ID_END = 5999;
+const MAX_WHITELIST_ENTRIES = WHITELIST_RULE_ID_END - WHITELIST_RULE_ID_START + 1;
+const MAX_DOMAIN_SETTINGS_ENTRIES = 500;
+const MAX_ERROR_LOG_ENTRIES = 50;
+const MAX_ERROR_CONTEXT_LENGTH = 80;
+const MAX_ERROR_MESSAGE_LENGTH = 500;
+const MAX_DOMAIN_LENGTH = 253;
 const tabBlockedCounts = new Map();
 
 const WHITELIST_FRAME_RESOURCE_TYPES = ['main_frame', 'sub_frame'];
@@ -14,20 +20,83 @@ function deepEqual(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+function nowIsoString() {
+  return new Date().toISOString();
+}
+
+function clampNonNegativeInt(value, fallback = 0) {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.trunc(value));
+}
+
+function sanitizeText(value, fallback, maxLength) {
+  if (typeof value !== 'string') return fallback;
+  const trimmed = value.trim();
+  if (!trimmed) return fallback;
+  return trimmed.slice(0, maxLength);
+}
+
 function createDefaultStats() {
+  const now = nowIsoString();
   return {
-    totalBlocked: 0,
-    sessionBlocked: 0,
-    lastReset: new Date().toISOString()
+    releaseSafe: {
+      settingsMutationCount: 0,
+      whitelistEntryCount: 0,
+      domainOverrideCount: 0,
+      lastConfigChange: now
+    },
+    debugApprox: {
+      totalBlocked: 0,
+      sessionBlocked: 0,
+      lastReset: now,
+      source: 'declarativeNetRequest.onRuleMatchedDebug',
+      isApproximate: true
+    }
   };
 }
 
 function sanitizeStats(rawStats) {
   const stats = isObject(rawStats) ? rawStats : {};
+  const defaults = createDefaultStats();
+  const releaseSafe = isObject(stats.releaseSafe) ? stats.releaseSafe : {};
+  const debugApprox = isObject(stats.debugApprox) ? stats.debugApprox : {};
+
+  const legacyTotalBlocked = Number.isFinite(stats.totalBlocked)
+    ? clampNonNegativeInt(stats.totalBlocked, 0)
+    : defaults.debugApprox.totalBlocked;
+  const legacySessionBlocked = Number.isFinite(stats.sessionBlocked)
+    ? clampNonNegativeInt(stats.sessionBlocked, 0)
+    : defaults.debugApprox.sessionBlocked;
+  const legacyLastReset =
+    typeof stats.lastReset === 'string' ? stats.lastReset : defaults.debugApprox.lastReset;
+
   return {
-    totalBlocked: Number.isFinite(stats.totalBlocked) ? stats.totalBlocked : 0,
-    sessionBlocked: Number.isFinite(stats.sessionBlocked) ? stats.sessionBlocked : 0,
-    lastReset: typeof stats.lastReset === 'string' ? stats.lastReset : new Date().toISOString()
+    releaseSafe: {
+      settingsMutationCount: clampNonNegativeInt(
+        releaseSafe.settingsMutationCount,
+        defaults.releaseSafe.settingsMutationCount
+      ),
+      whitelistEntryCount: clampNonNegativeInt(
+        releaseSafe.whitelistEntryCount,
+        defaults.releaseSafe.whitelistEntryCount
+      ),
+      domainOverrideCount: clampNonNegativeInt(
+        releaseSafe.domainOverrideCount,
+        defaults.releaseSafe.domainOverrideCount
+      ),
+      lastConfigChange:
+        typeof releaseSafe.lastConfigChange === 'string'
+          ? releaseSafe.lastConfigChange
+          : defaults.releaseSafe.lastConfigChange
+    },
+    debugApprox: {
+      totalBlocked: clampNonNegativeInt(debugApprox.totalBlocked, legacyTotalBlocked),
+      sessionBlocked: clampNonNegativeInt(debugApprox.sessionBlocked, legacySessionBlocked),
+      lastReset: typeof debugApprox.lastReset === 'string' ? debugApprox.lastReset : legacyLastReset,
+      source:
+        typeof debugApprox.source === 'string' ? debugApprox.source : defaults.debugApprox.source,
+      isApproximate: true
+    }
   };
 }
 
@@ -35,12 +104,12 @@ function sanitizeErrorLog(rawErrorLog) {
   if (!Array.isArray(rawErrorLog)) return [];
 
   return rawErrorLog
-    .slice(-50)
+    .slice(-MAX_ERROR_LOG_ENTRIES)
     .map((entry) => {
       if (!isObject(entry)) return null;
       return {
-        context: typeof entry.context === 'string' ? entry.context : 'unknown',
-        message: typeof entry.message === 'string' ? entry.message : 'Unknown error',
+        context: sanitizeText(entry.context, 'unknown', MAX_ERROR_CONTEXT_LENGTH),
+        message: sanitizeText(entry.message, 'Unknown error', MAX_ERROR_MESSAGE_LENGTH),
         timestamp: Number.isFinite(entry.timestamp) ? entry.timestamp : Date.now()
       };
     })
@@ -72,6 +141,10 @@ function normalizeDomain(rawDomain) {
   }
 
   const host = value.split(':')[0];
+  if (!host || host.length > MAX_DOMAIN_LENGTH) {
+    return null;
+  }
+
   const isLocalhost = host === 'localhost';
   const isIpv4 = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host);
   const isDomain = /^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(host);
@@ -94,6 +167,10 @@ function sanitizeWhitelist(rawWhitelist) {
     if (!domain || seen.has(domain)) continue;
     seen.add(domain);
     normalized.push(domain);
+
+    if (normalized.length >= MAX_WHITELIST_ENTRIES) {
+      break;
+    }
   }
 
   return normalized;
@@ -103,9 +180,16 @@ function sanitizeDomainSettings(rawDomainSettings) {
   if (!isObject(rawDomainSettings)) return {};
 
   const normalized = {};
+  const seen = new Set();
+
   for (const [rawDomain, rawConfig] of Object.entries(rawDomainSettings)) {
+    if (Object.keys(normalized).length >= MAX_DOMAIN_SETTINGS_ENTRIES) {
+      break;
+    }
+
     const domain = normalizeDomain(rawDomain);
-    if (!domain || !isObject(rawConfig)) continue;
+    if (!domain || !isObject(rawConfig) || seen.has(domain)) continue;
+    seen.add(domain);
 
     const nextConfig = {};
     if (typeof rawConfig.cosmetic === 'boolean') {
@@ -116,6 +200,9 @@ function sanitizeDomainSettings(rawDomainSettings) {
     }
     if (rawConfig.strictness === 'balanced' || rawConfig.strictness === 'strict') {
       nextConfig.strictness = rawConfig.strictness;
+    }
+    if (Object.keys(nextConfig).length === 0) {
+      continue;
     }
 
     normalized[domain] = nextConfig;
@@ -135,16 +222,52 @@ function getDomainFromSender(sender) {
   }
 }
 
+async function refreshReleaseSafeStats(options = {}) {
+  const incrementMutation = options.incrementMutation === true;
+  const data = await chrome.storage.local.get(['stats', 'whitelist', 'domainSettings']);
+  const stats = sanitizeStats(data.stats);
+  const whitelist = sanitizeWhitelist(data.whitelist);
+  const domainSettings = sanitizeDomainSettings(data.domainSettings);
+
+  const nextStats = {
+    releaseSafe: {
+      settingsMutationCount:
+        stats.releaseSafe.settingsMutationCount + (incrementMutation ? 1 : 0),
+      whitelistEntryCount: whitelist.length,
+      domainOverrideCount: Object.keys(domainSettings).length,
+      lastConfigChange: incrementMutation ? nowIsoString() : stats.releaseSafe.lastConfigChange
+    },
+    debugApprox: stats.debugApprox
+  };
+
+  const updates = {};
+  if (!deepEqual(data.whitelist, whitelist)) {
+    updates.whitelist = whitelist;
+  }
+  if (!deepEqual(data.domainSettings, domainSettings)) {
+    updates.domainSettings = domainSettings;
+  }
+  if (!deepEqual(data.stats, nextStats)) {
+    updates.stats = nextStats;
+  }
+
+  if (Object.keys(updates).length > 0) {
+    await chrome.storage.local.set(updates);
+  }
+
+  return nextStats;
+}
+
 async function logError(context, error) {
   try {
     const data = await chrome.storage.local.get('errorLog');
     const errorLog = sanitizeErrorLog(data.errorLog);
     errorLog.push({
-      context,
-      message: error?.message || String(error),
+      context: sanitizeText(context, 'unknown', MAX_ERROR_CONTEXT_LENGTH),
+      message: sanitizeText(error?.message || String(error), 'Unknown error', MAX_ERROR_MESSAGE_LENGTH),
       timestamp: Date.now()
     });
-    await chrome.storage.local.set({ errorLog: errorLog.slice(-50) });
+    await chrome.storage.local.set({ errorLog: errorLog.slice(-MAX_ERROR_LOG_ENTRIES) });
   } catch (_) {
     // Ignore logging failures.
   }
@@ -160,9 +283,7 @@ async function migrateStorage() {
   }
 
   const networkBlockingEnabled =
-    typeof current.networkBlockingEnabled === 'boolean'
-      ? current.networkBlockingEnabled
-      : enabled;
+    typeof current.networkBlockingEnabled === 'boolean' ? current.networkBlockingEnabled : enabled;
   if (current.networkBlockingEnabled !== networkBlockingEnabled) {
     updates.networkBlockingEnabled = networkBlockingEnabled;
   }
@@ -175,7 +296,8 @@ async function migrateStorage() {
     updates.cosmeticFilteringEnabled = cosmeticFilteringEnabled;
   }
 
-  const strictModeEnabled = typeof current.strictModeEnabled === 'boolean' ? current.strictModeEnabled : false;
+  const strictModeEnabled =
+    typeof current.strictModeEnabled === 'boolean' ? current.strictModeEnabled : false;
   if (current.strictModeEnabled !== strictModeEnabled) {
     updates.strictModeEnabled = strictModeEnabled;
   }
@@ -212,8 +334,8 @@ async function migrateStorage() {
 async function resetSessionBlockedCounter() {
   const data = await chrome.storage.local.get('stats');
   const stats = sanitizeStats(data.stats);
-  stats.sessionBlocked = 0;
-  stats.lastReset = new Date().toISOString();
+  stats.debugApprox.sessionBlocked = 0;
+  stats.debugApprox.lastReset = nowIsoString();
   await chrome.storage.local.set({ stats });
 }
 
@@ -235,9 +357,7 @@ async function updateWhitelistRules(whitelist) {
     .filter((rule) => rule.id >= WHITELIST_RULE_ID_START && rule.id <= WHITELIST_RULE_ID_END)
     .map((rule) => rule.id);
 
-  const maxWhitelistEntries = WHITELIST_RULE_ID_END - WHITELIST_RULE_ID_START + 1;
-  const effectiveWhitelist = whitelist.slice(0, maxWhitelistEntries);
-
+  const effectiveWhitelist = whitelist.slice(0, MAX_WHITELIST_ENTRIES);
   const addRules = effectiveWhitelist.map((domain, index) => ({
     id: WHITELIST_RULE_ID_START + index,
     priority: 5,
@@ -274,6 +394,8 @@ async function setEnabled(enabled) {
   } else {
     await chrome.declarativeNetRequest.updateEnabledRulesets({ disableRulesetIds: RULESET_IDS });
   }
+
+  await refreshReleaseSafeStats({ incrementMutation: true });
 }
 
 async function getStateForSender(sender) {
@@ -297,17 +419,29 @@ async function getStateForSender(sender) {
     whitelist: sanitizeWhitelist(data.whitelist),
     domainSettings,
     currentDomain,
-    currentDomainSettings: currentDomain ? (domainSettings[currentDomain] || null) : null
+    currentDomainSettings: currentDomain ? domainSettings[currentDomain] || null : null
   };
 }
 
 async function setSiteCosmetic(domain, enabled) {
   const data = await chrome.storage.local.get('domainSettings');
   const domainSettings = sanitizeDomainSettings(data.domainSettings);
-  const current = isObject(domainSettings[domain]) ? domainSettings[domain] : {};
+  const hasExistingDomain = isObject(domainSettings[domain]);
+  if (!hasExistingDomain && Object.keys(domainSettings).length >= MAX_DOMAIN_SETTINGS_ENTRIES) {
+    return {
+      error: `setSiteCosmetic rejected: domainSettings limit (${MAX_DOMAIN_SETTINGS_ENTRIES}) reached`
+    };
+  }
+
+  const current = hasExistingDomain ? domainSettings[domain] : {};
+  if (current.cosmetic === enabled) {
+    return { domain, settings: current };
+  }
+
   current.cosmetic = enabled;
   domainSettings[domain] = current;
   await chrome.storage.local.set({ domainSettings });
+  await refreshReleaseSafeStats({ incrementMutation: true });
   return { domain, settings: current };
 }
 
@@ -317,6 +451,7 @@ chrome.runtime.onInstalled.addListener(async () => {
     await resetSessionBlockedCounter();
     await applyPersistedRulesetState();
     await syncWhitelistRulesWithStorage();
+    await refreshReleaseSafeStats();
     await chrome.action.setBadgeBackgroundColor({ color: '#666' });
   } catch (err) {
     await logError('onInstalled', err);
@@ -329,6 +464,7 @@ chrome.runtime.onStartup.addListener(async () => {
     await resetSessionBlockedCounter();
     await applyPersistedRulesetState();
     await syncWhitelistRulesWithStorage();
+    await refreshReleaseSafeStats();
   } catch (err) {
     await logError('onStartup', err);
   }
@@ -345,8 +481,8 @@ chrome.declarativeNetRequest.onRuleMatchedDebug.addListener(async (info) => {
 
     const data = await chrome.storage.local.get('stats');
     const stats = sanitizeStats(data.stats);
-    stats.totalBlocked += 1;
-    stats.sessionBlocked += 1;
+    stats.debugApprox.totalBlocked += 1;
+    stats.debugApprox.sessionBlocked += 1;
     await chrome.storage.local.set({ stats });
   } catch (err) {
     await logError('onRuleMatchedDebug', err);
@@ -402,7 +538,14 @@ async function handleMessage(message, sender) {
       if (typeof message.enabled !== 'boolean') {
         return { error: 'setCosmeticFiltering requires boolean "enabled"' };
       }
-      await chrome.storage.local.set({ cosmeticFilteringEnabled: message.enabled });
+
+      const data = await chrome.storage.local.get('cosmeticFilteringEnabled');
+      const currentValue = data.cosmeticFilteringEnabled ?? true;
+      if (currentValue !== message.enabled) {
+        await chrome.storage.local.set({ cosmeticFilteringEnabled: message.enabled });
+        await refreshReleaseSafeStats({ incrementMutation: true });
+      }
+
       return { cosmeticFilteringEnabled: message.enabled };
     }
 
@@ -410,7 +553,14 @@ async function handleMessage(message, sender) {
       if (typeof message.enabled !== 'boolean') {
         return { error: 'setStrictMode requires boolean "enabled"' };
       }
-      await chrome.storage.local.set({ strictModeEnabled: message.enabled });
+
+      const data = await chrome.storage.local.get('strictModeEnabled');
+      const currentValue = data.strictModeEnabled ?? false;
+      if (currentValue !== message.enabled) {
+        await chrome.storage.local.set({ strictModeEnabled: message.enabled });
+        await refreshReleaseSafeStats({ incrementMutation: true });
+      }
+
       return { strictModeEnabled: message.enabled };
     }
 
@@ -435,11 +585,20 @@ async function handleMessage(message, sender) {
 
       const data = await chrome.storage.local.get('whitelist');
       const whitelist = sanitizeWhitelist(data.whitelist);
-      if (!whitelist.includes(domain)) {
-        whitelist.push(domain);
-        await chrome.storage.local.set({ whitelist });
-        await updateWhitelistRules(whitelist);
+      if (whitelist.includes(domain)) {
+        return { whitelist };
       }
+
+      if (whitelist.length >= MAX_WHITELIST_ENTRIES) {
+        return {
+          error: `addToWhitelist rejected: whitelist limit (${MAX_WHITELIST_ENTRIES}) reached`
+        };
+      }
+
+      whitelist.push(domain);
+      await chrome.storage.local.set({ whitelist });
+      await updateWhitelistRules(whitelist);
+      await refreshReleaseSafeStats({ incrementMutation: true });
 
       return { whitelist };
     }
@@ -451,9 +610,16 @@ async function handleMessage(message, sender) {
       }
 
       const data = await chrome.storage.local.get('whitelist');
-      const whitelist = sanitizeWhitelist(data.whitelist).filter((item) => item !== domain);
+      const currentWhitelist = sanitizeWhitelist(data.whitelist);
+      const whitelist = currentWhitelist.filter((item) => item !== domain);
+      if (whitelist.length === currentWhitelist.length) {
+        return { whitelist };
+      }
+
       await chrome.storage.local.set({ whitelist });
       await updateWhitelistRules(whitelist);
+      await refreshReleaseSafeStats({ incrementMutation: true });
+
       return { whitelist };
     }
 
@@ -461,8 +627,19 @@ async function handleMessage(message, sender) {
       const data = await chrome.storage.local.get('stats');
       const stats = sanitizeStats(data.stats);
       const tabId = sender?.tab?.id;
-      stats.tabBlocked = Number.isInteger(tabId) ? (tabBlockedCounts.get(tabId) || 0) : 0;
-      return stats;
+      const tabBlocked = Number.isInteger(tabId) ? tabBlockedCounts.get(tabId) || 0 : 0;
+
+      return {
+        releaseSafe: stats.releaseSafe,
+        debugApprox: {
+          ...stats.debugApprox,
+          tabBlocked
+        },
+        totalBlocked: stats.debugApprox.totalBlocked,
+        sessionBlocked: stats.debugApprox.sessionBlocked,
+        tabBlocked,
+        isApproximate: true
+      };
     }
 
     case 'getErrorLog': {

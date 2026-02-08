@@ -194,6 +194,7 @@
     "action": { "type": "block" },
     "condition": {
       "urlFilter": "*/ads/*",
+      "domainType": "thirdParty",
       "resourceTypes": ["script", "image", "sub_frame", "xmlhttprequest"]
     }
   },
@@ -203,6 +204,7 @@
     "action": { "type": "block" },
     "condition": {
       "urlFilter": "*/adserver/*",
+      "domainType": "thirdParty",
       "resourceTypes": ["script", "image", "sub_frame", "xmlhttprequest"]
     }
   },

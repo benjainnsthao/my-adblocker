@@ -1,75 +1,93 @@
 const STYLE_ID = 'adblocker-cosmetic';
 const HIDDEN_ATTR = 'data-adblocker-hidden';
 
-const SAFE_SELECTORS = [
-  '.ad-banner',
-  '.ad-container',
-  '.advertisement',
-  '.ad-wrapper',
-  '.ad-unit',
-  '.ad-slot',
-  '.ad-block',
-  '.ad-box',
-  '.advert',
-  '.advert-banner',
-  '.advert-container',
-  '.sponsored',
-  '.sponsored-content',
-  '.sponsored-post',
-  '.banner-ad',
-  '.sidebar-ad',
-  '.footer-ad',
-  '.header-ad',
-  '.native-ad',
-  '.in-article-ad',
-  '.interstitial-ad',
-  '.dfp-ad',
-  '.gpt-ad',
-  '#ad-slot',
-  '#google_ads',
-  '#ad-container',
-  '#ad-wrapper',
-  '#advert',
-  '#ads',
-  '#ad-banner',
-  '#leaderboard-ad',
-  '#sidebar-ad',
-  '#footer-ad',
-  '[id^="div-gpt-ad"]',
-  '[id^="google_ads_"]',
-  '[data-ad]',
-  '[data-ad-slot]',
-  '[data-ad-client]',
-  '[data-google-query-id]',
-  '[aria-label*="advertisement" i]',
-  '[aria-label*="sponsored" i]',
-  'ins.adsbygoogle',
-  'amp-ad',
-  'amp-embed',
-  'iframe[src*="doubleclick"]',
-  'iframe[id*="google_ads"]',
-  'iframe[name*="google_ads"]',
-  '[data-testid="placementTracking"]',
-  '[data-ad-preview]',
-  '.x-sponsored',
-  'ytd-ad-slot-renderer',
-  'ytd-promoted-sparkles-web-renderer',
-  'ytd-display-ad-renderer',
-  'ytd-in-feed-ad-layout-renderer'
-];
+const SELECTORS_BY_RISK = Object.freeze({
+  safe: [
+    '.ad-banner',
+    '.ad-container',
+    '.ad-wrapper',
+    '.ad-unit',
+    '.ad-slot',
+    '.ad-box',
+    '.advert-banner',
+    '.advert-container',
+    '.banner-ad',
+    '.sidebar-ad',
+    '.footer-ad',
+    '.header-ad',
+    '.native-ad',
+    '.in-article-ad',
+    '.interstitial-ad',
+    '.dfp-ad',
+    '.gpt-ad',
+    '#ad-slot',
+    '#google_ads',
+    '#ad-container',
+    '#ad-wrapper',
+    '#ad-banner',
+    '#leaderboard-ad',
+    '#sidebar-ad',
+    '#footer-ad',
+    '[id^="div-gpt-ad"]',
+    '[id^="google_ads_"]',
+    '[data-ad-slot]',
+    '[data-ad-client]',
+    '[data-google-query-id]',
+    'ins.adsbygoogle',
+    'amp-ad',
+    'amp-embed',
+    'iframe[src*="doubleclick"]',
+    'iframe[id*="google_ads"]',
+    'iframe[name*="google_ads"]',
+    'ytd-ad-slot-renderer',
+    'ytd-promoted-sparkles-web-renderer',
+    'ytd-display-ad-renderer',
+    'ytd-in-feed-ad-layout-renderer'
+  ],
+  medium: [
+    '.ad-banner',
+    '.ad-container',
+    '.advertisement',
+    '.ad-block',
+    '.advert',
+    '.sponsored',
+    '.sponsored-content',
+    '.sponsored-post',
+    '#advert',
+    '#ads',
+    '[data-ad]',
+    '[aria-label*="advertisement" i]',
+    '[aria-label*="sponsored" i]',
+    '[data-testid="placementTracking"]',
+    '[data-ad-preview]',
+    '.x-sponsored'
+  ],
+  aggressive: [
+    '[class*="sponsored"]',
+    '[class*="advertisement"]',
+    'iframe[src*="ads"]',
+    'aside[class*="ad"]',
+    'section[class*="ad"]'
+  ]
+});
 
-const AGGRESSIVE_SELECTORS = [
-  '[class*="sponsored"]',
-  '[class*="advertisement"]',
-  'iframe[src*="ads"]',
-  'aside[class*="ad"]',
-  'section[class*="ad"]'
-];
+const FRAGILE_SELECTOR_EXCLUSIONS = Object.freeze({
+  'amazon.com': ['.sponsored', '[class*="sponsored"]'],
+  'github.com': ['.sponsored'],
+  'linkedin.com': ['.sponsored-content'],
+  'nytimes.com': ['.advertisement'],
+  'wikipedia.org': ['.advertisement'],
+  'weather.com': ['.ad-container'],
+  'reddit.com': ['[data-testid="placementTracking"]'],
+  'x.com': ['.x-sponsored'],
+  'youtube.com': ['#ads', 'ytd-in-feed-ad-layout-renderer'],
+  'cnn.com': ['.advert-banner']
+});
 
 let observer = null;
 let debounceTimer = null;
 let processedNodes = new WeakSet();
-let activeSelectors = SAFE_SELECTORS.slice();
+let activeSelectors = [];
 let isCosmeticEnabled = true;
 
 function isObject(value) {
@@ -85,20 +103,70 @@ function getCurrentHostname() {
   }
 }
 
-function getDomainConfig(domainSettings, hostname) {
-  if (!isObject(domainSettings) || !hostname) return null;
+function getHostnameHierarchy(hostname) {
+  if (!hostname) return [];
 
+  const domains = [];
   let current = hostname;
   while (current) {
-    if (isObject(domainSettings[current])) {
-      return domainSettings[current];
-    }
+    domains.push(current);
     const dotIndex = current.indexOf('.');
     if (dotIndex === -1) break;
     current = current.slice(dotIndex + 1);
   }
 
+  return domains;
+}
+
+function getDomainConfig(domainSettings, hostname) {
+  if (!isObject(domainSettings) || !hostname) return null;
+
+  for (const domain of getHostnameHierarchy(hostname)) {
+    if (isObject(domainSettings[domain])) {
+      return domainSettings[domain];
+    }
+  }
+
   return null;
+}
+
+function getExcludedSelectors(hostname) {
+  const blocked = new Set();
+
+  for (const domain of getHostnameHierarchy(hostname)) {
+    const exclusions = FRAGILE_SELECTOR_EXCLUSIONS[domain];
+    if (!Array.isArray(exclusions)) continue;
+    for (const selector of exclusions) {
+      blocked.add(selector);
+    }
+  }
+
+  return blocked;
+}
+
+function getSelectorsForMode(strictModeEnabled) {
+  const selectors = SELECTORS_BY_RISK.safe.concat(SELECTORS_BY_RISK.medium);
+  if (strictModeEnabled) {
+    selectors.push(...SELECTORS_BY_RISK.aggressive);
+  }
+  return selectors;
+}
+
+function buildActiveSelectors(strictModeEnabled, hostname) {
+  const excludedSelectors = getExcludedSelectors(hostname);
+  const selectors = getSelectorsForMode(strictModeEnabled);
+  const deduped = [];
+  const seen = new Set();
+
+  for (const selector of selectors) {
+    if (excludedSelectors.has(selector) || seen.has(selector)) {
+      continue;
+    }
+    seen.add(selector);
+    deduped.push(selector);
+  }
+
+  return deduped;
 }
 
 function buildStyleText(selectors) {
@@ -221,14 +289,9 @@ function startObserver() {
 
 function applyCosmeticState(state) {
   const strictModeEnabled = state.strictModeEnabled || state.siteStrictness === 'strict';
-  activeSelectors = strictModeEnabled
-    ? SAFE_SELECTORS.concat(AGGRESSIVE_SELECTORS)
-    : SAFE_SELECTORS.slice();
+  activeSelectors = buildActiveSelectors(strictModeEnabled, state.hostname);
 
-  isCosmeticEnabled =
-    state.enabled &&
-    state.cosmeticFilteringEnabled &&
-    state.siteCosmeticEnabled;
+  isCosmeticEnabled = state.enabled && state.cosmeticFilteringEnabled && state.siteCosmeticEnabled;
 
   if (!isCosmeticEnabled) {
     stopObserver();
@@ -259,7 +322,8 @@ async function loadStateFromStorage() {
     cosmeticFilteringEnabled: data.cosmeticFilteringEnabled ?? true,
     strictModeEnabled: data.strictModeEnabled ?? false,
     siteCosmeticEnabled: domainConfig?.cosmetic !== false,
-    siteStrictness: domainConfig?.strictness
+    siteStrictness: domainConfig?.strictness,
+    hostname
   });
 }
 
@@ -297,7 +361,8 @@ applyCosmeticState({
   cosmeticFilteringEnabled: true,
   strictModeEnabled: false,
   siteCosmeticEnabled: true,
-  siteStrictness: 'balanced'
+  siteStrictness: 'balanced',
+  hostname: getCurrentHostname()
 });
 
 loadStateFromStorage().catch((err) => {

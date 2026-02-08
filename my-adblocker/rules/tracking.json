@@ -95,6 +95,7 @@
     "action": { "type": "block" },
     "condition": {
       "urlFilter": "*/tracking/*",
+      "domainType": "thirdParty",
       "resourceTypes": ["script", "image", "xmlhttprequest", "ping"]
     }
   },
@@ -104,6 +105,7 @@
     "action": { "type": "block" },
     "condition": {
       "urlFilter": "*/pixel.gif",
+      "domainType": "thirdParty",
       "resourceTypes": ["image"]
     }
   },
@@ -114,6 +116,7 @@
     "condition": {
       "requestDomains": ["connect.facebook.net"],
       "urlFilter": "fbevents.js",
+      "domainType": "thirdParty",
       "resourceTypes": ["script"]
     }
   },
@@ -123,7 +126,8 @@
     "action": { "type": "block" },
     "condition": {
       "requestDomains": ["facebook.com"],
-      "urlFilter": "*/tr*",
+      "urlFilter": "||facebook.com/tr?",
+      "domainType": "thirdParty",
       "resourceTypes": ["image", "xmlhttprequest", "ping"]
     }
   }
