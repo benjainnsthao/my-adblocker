@@ -212,7 +212,8 @@
     "action": { "type": "block" },
     "condition": {
       "urlFilter": "*/advert*",
-      "resourceTypes": ["script", "image", "sub_frame", "xmlhttprequest"]
+      "domainType": "thirdParty",
+      "resourceTypes": ["script", "sub_frame", "xmlhttprequest"]
     }
   },
   {
@@ -221,6 +222,47 @@
     "action": { "type": "block" },
     "condition": {
       "urlFilter": "*_ad_*",
+      "domainType": "thirdParty",
+      "resourceTypes": ["script", "sub_frame", "xmlhttprequest"]
+    }
+  },
+  {
+    "id": 5500,
+    "priority": 5,
+    "action": { "type": "allow" },
+    "condition": {
+      "urlFilter": "*/ads/*",
+      "domainType": "firstParty",
+      "resourceTypes": ["script", "image", "sub_frame", "xmlhttprequest"]
+    }
+  },
+  {
+    "id": 5501,
+    "priority": 5,
+    "action": { "type": "allow" },
+    "condition": {
+      "urlFilter": "*/adserver/*",
+      "domainType": "firstParty",
+      "resourceTypes": ["script", "image", "sub_frame", "xmlhttprequest"]
+    }
+  },
+  {
+    "id": 5502,
+    "priority": 5,
+    "action": { "type": "allow" },
+    "condition": {
+      "urlFilter": "*/advert*",
+      "domainType": "firstParty",
+      "resourceTypes": ["script", "image", "sub_frame", "xmlhttprequest"]
+    }
+  },
+  {
+    "id": 5503,
+    "priority": 5,
+    "action": { "type": "allow" },
+    "condition": {
+      "urlFilter": "*_ad_*",
+      "domainType": "firstParty",
       "resourceTypes": ["script", "image", "sub_frame", "xmlhttprequest"]
     }
   }

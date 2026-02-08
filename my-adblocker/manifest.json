@@ -5,12 +5,8 @@
   "description": "A Manifest V3 ad blocker with network rules and cosmetic filtering.",
   "permissions": [
     "declarativeNetRequest",
-    "declarativeNetRequestWithHostAccess",
     "declarativeNetRequestFeedback",
-    "activeTab",
-    "storage",
-    "scripting",
-    "webNavigation"
+    "storage"
   ],
   "host_permissions": [
     "<all_urls>"
