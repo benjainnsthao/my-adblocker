@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>My Adblocker</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="popup">
+      <header class="hero">
+        <p class="eyebrow">Gate 2 Control Panel</p>
+        <h1>My Adblocker</h1>
+        <p id="status" class="status" role="status" aria-live="polite"></p>
+      </header>
+
+      <section class="card">
+        <label class="toggle-row" for="global-toggle">
+          <span class="label-text">Global Blocking</span>
+          <input id="global-toggle" type="checkbox" />
+        </label>
+        <p class="hint">Applies to network and cosmetic filtering together.</p>
+      </section>
+
+      <section class="card">
+        <p class="section-title">Current Site</p>
+        <p id="current-domain" class="domain">Unavailable on this page</p>
+        <button id="whitelist-toggle" class="button secondary" type="button">
+          Whitelist This Site
+        </button>
+      </section>
+
+      <section class="card">
+        <p class="section-title">Blocked Requests</p>
+        <div class="counter-grid">
+          <div class="counter">
+            <span class="counter-label">Tab</span>
+            <strong id="tab-counter">0</strong>
+          </div>
+          <div class="counter">
+            <span class="counter-label">Session</span>
+            <strong id="session-counter">0</strong>
+          </div>
+          <div class="counter">
+            <span class="counter-label">Lifetime</span>
+            <strong id="lifetime-counter">0</strong>
+          </div>
+        </div>
+        <p class="hint">Approximate counters from debug callback events.</p>
+      </section>
+
+      <section class="card actions">
+        <button id="quick-pause" class="button warning" type="button">Quick Pause (30s)</button>
+        <p id="pause-status" class="hint">Temporarily disable blocking for troubleshooting.</p>
+        <button id="report-issue" class="button" type="button">Report Site Issue</button>
+      </section>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

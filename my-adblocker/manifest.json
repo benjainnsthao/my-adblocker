@@ -6,7 +6,8 @@
   "permissions": [
     "declarativeNetRequest",
     "declarativeNetRequestFeedback",
-    "storage"
+    "storage",
+    "alarms"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -41,6 +42,10 @@
   ],
   "background": {
     "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "My Adblocker",
+    "default_popup": "popup/popup.html"
   },
   "web_accessible_resources": []
 }
