@@ -130,6 +130,28 @@ function getDomainConfig(domainSettings, hostname) {
   return null;
 }
 
+function normalizeHostnameValue(rawValue) {
+  if (typeof rawValue !== 'string') return null;
+  const trimmed = rawValue.trim().toLowerCase();
+  if (!trimmed) return null;
+  return trimmed.startsWith('www.') ? trimmed.slice(4) : trimmed;
+}
+
+function isHostnameWhitelisted(hostname, whitelist) {
+  if (!hostname || !Array.isArray(whitelist)) return false;
+
+  const hostnameHierarchy = new Set(getHostnameHierarchy(hostname));
+  for (const entry of whitelist) {
+    const normalized = normalizeHostnameValue(entry);
+    if (!normalized) continue;
+    if (hostnameHierarchy.has(normalized)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function getExcludedSelectors(hostname) {
   const blocked = new Set();
 
@@ -310,18 +332,20 @@ async function loadStateFromStorage() {
     'enabled',
     'cosmeticFilteringEnabled',
     'strictModeEnabled',
-    'domainSettings'
+    'domainSettings',
+    'whitelist'
   ]);
 
   const hostname = getCurrentHostname();
   const domainSettings = isObject(data.domainSettings) ? data.domainSettings : {};
   const domainConfig = getDomainConfig(domainSettings, hostname);
+  const isWhitelisted = isHostnameWhitelisted(hostname, data.whitelist);
 
   applyCosmeticState({
     enabled: data.enabled ?? true,
     cosmeticFilteringEnabled: data.cosmeticFilteringEnabled ?? true,
     strictModeEnabled: data.strictModeEnabled ?? false,
-    siteCosmeticEnabled: domainConfig?.cosmetic !== false,
+    siteCosmeticEnabled: !isWhitelisted && domainConfig?.cosmetic !== false,
     siteStrictness: domainConfig?.strictness,
     hostname
   });
@@ -335,7 +359,8 @@ function initStorageListener() {
       changes.enabled ||
       changes.cosmeticFilteringEnabled ||
       changes.strictModeEnabled ||
-      changes.domainSettings
+      changes.domainSettings ||
+      changes.whitelist
     ) {
       loadStateFromStorage().catch((err) => {
         console.error('[AdBlocker] failed to reload cosmetic state:', err.message);

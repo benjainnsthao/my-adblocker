@@ -1,0 +1,32 @@
+[
+  {
+    "id": 4001,
+    "priority": 4,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "extensionPath": "/surrogates/forbes-adblock.v1.js"
+      }
+    },
+    "condition": {
+      "regexFilter": "^https?://cdn\\.forbes\\.com/.+/adblock[^/]*\\.js(?:[?#].*)?$",
+      "initiatorDomains": ["forbes.com"],
+      "resourceTypes": ["script"]
+    }
+  },
+  {
+    "id": 4002,
+    "priority": 4,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "extensionPath": "/surrogates/sourceforge-adblock.v1.js"
+      }
+    },
+    "condition": {
+      "regexFilter": "^https?://a\\.fsdn\\.com/con/js/sftheme/vendor/adblock[^/]*\\.js(?:[?#].*)?$",
+      "initiatorDomains": ["sourceforge.net"],
+      "resourceTypes": ["script"]
+    }
+  }
+]

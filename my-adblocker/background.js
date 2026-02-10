@@ -1,4 +1,6 @@
-const RULESET_IDS = ['ads', 'tracking', 'annoyances'];
+const CORE_RULESET_IDS = ['ads', 'tracking', 'annoyances'];
+const SURROGATE_RULESET_ID = 'surrogates';
+const ALL_RULESET_IDS = [...CORE_RULESET_IDS, SURROGATE_RULESET_ID];
 const STORAGE_SCHEMA_VERSION = 1;
 const WHITELIST_RULE_ID_START = 5000;
 const WHITELIST_RULE_ID_END = 5999;
@@ -419,6 +421,12 @@ async function migrateStorage() {
     updates.strictModeEnabled = strictModeEnabled;
   }
 
+  const surrogatesEnabled =
+    typeof current.surrogatesEnabled === 'boolean' ? current.surrogatesEnabled : true;
+  if (current.surrogatesEnabled !== surrogatesEnabled) {
+    updates.surrogatesEnabled = surrogatesEnabled;
+  }
+
   const whitelist = sanitizeWhitelist(current.whitelist);
   if (!deepEqual(current.whitelist, whitelist)) {
     updates.whitelist = whitelist;
@@ -467,20 +475,53 @@ async function resetSessionBlockedCounter() {
 }
 
 async function applyPersistedRulesetState() {
-  const data = await chrome.storage.local.get(['enabled', 'networkBlockingEnabled']);
+  const data = await chrome.storage.local.get([
+    'enabled',
+    'networkBlockingEnabled',
+    'surrogatesEnabled'
+  ]);
   const enabled = data.enabled ?? true;
   const networkBlockingEnabled = data.networkBlockingEnabled ?? enabled;
+  const surrogatesEnabled = data.surrogatesEnabled ?? true;
 
-  await syncNetworkRulesetState(networkBlockingEnabled);
+  await syncNetworkRulesetState(networkBlockingEnabled, surrogatesEnabled);
 }
 
-async function syncNetworkRulesetState(networkBlockingEnabled) {
-  if (networkBlockingEnabled) {
-    await chrome.declarativeNetRequest.updateEnabledRulesets({ enableRulesetIds: RULESET_IDS });
+function buildRulesetStateUpdate(networkBlockingEnabled, surrogatesEnabled) {
+  if (!networkBlockingEnabled) {
+    return {
+      enableRulesetIds: [],
+      disableRulesetIds: ALL_RULESET_IDS
+    };
+  }
+
+  if (surrogatesEnabled) {
+    return {
+      enableRulesetIds: ALL_RULESET_IDS,
+      disableRulesetIds: []
+    };
+  }
+
+  return {
+    enableRulesetIds: CORE_RULESET_IDS,
+    disableRulesetIds: [SURROGATE_RULESET_ID]
+  };
+}
+
+async function syncNetworkRulesetState(networkBlockingEnabled, surrogatesEnabled = true) {
+  const { enableRulesetIds, disableRulesetIds } = buildRulesetStateUpdate(
+    networkBlockingEnabled,
+    surrogatesEnabled
+  );
+
+  if (enableRulesetIds.length === 0 && disableRulesetIds.length === 0) {
     return;
   }
 
-  await chrome.declarativeNetRequest.updateEnabledRulesets({ disableRulesetIds: RULESET_IDS });
+  await chrome.declarativeNetRequest.updateEnabledRulesets({
+    enableRulesetIds,
+    disableRulesetIds
+  });
 }
 
 async function updateWhitelistRules(whitelist) {
@@ -533,7 +574,9 @@ async function setEnabled(enabled, options = {}) {
     cosmeticFilteringEnabled: enabled
   });
 
-  await syncNetworkRulesetState(enabled);
+  const state = await chrome.storage.local.get('surrogatesEnabled');
+  const surrogatesEnabled = state.surrogatesEnabled ?? true;
+  await syncNetworkRulesetState(enabled, surrogatesEnabled);
 
   if (incrementMutation) {
     await refreshReleaseSafeStats({ incrementMutation: true });
@@ -543,8 +586,9 @@ async function setEnabled(enabled, options = {}) {
 async function resumeQuickPause(options = {}) {
   const force = options.force === true;
   const incrementMutation = options.incrementMutation !== false;
-  const data = await chrome.storage.local.get('quickPause');
+  const data = await chrome.storage.local.get(['quickPause', 'surrogatesEnabled']);
   const quickPause = sanitizeQuickPause(data.quickPause);
+  const surrogatesEnabled = data.surrogatesEnabled ?? true;
 
   if (!quickPause) {
     await chrome.alarms.clear(QUICK_PAUSE_ALARM_NAME);
@@ -566,7 +610,7 @@ async function resumeQuickPause(options = {}) {
     cosmeticFilteringEnabled: quickPause.resumeCosmeticFilteringEnabled
   });
   await chrome.alarms.clear(QUICK_PAUSE_ALARM_NAME);
-  await syncNetworkRulesetState(quickPause.resumeNetworkBlockingEnabled);
+  await syncNetworkRulesetState(quickPause.resumeNetworkBlockingEnabled, surrogatesEnabled);
   if (incrementMutation) {
     await refreshReleaseSafeStats({ incrementMutation: true });
   }
@@ -619,11 +663,13 @@ async function startQuickPause() {
   const data = await chrome.storage.local.get([
     'enabled',
     'networkBlockingEnabled',
-    'cosmeticFilteringEnabled'
+    'cosmeticFilteringEnabled',
+    'surrogatesEnabled'
   ]);
   const enabled = data.enabled ?? true;
   const networkBlockingEnabled = data.networkBlockingEnabled ?? enabled;
   const cosmeticFilteringEnabled = data.cosmeticFilteringEnabled ?? enabled;
+  const surrogatesEnabled = data.surrogatesEnabled ?? true;
 
   if (!enabled && !networkBlockingEnabled && !cosmeticFilteringEnabled) {
     return { error: 'Quick pause requires blocker to be enabled' };
@@ -642,7 +688,7 @@ async function startQuickPause() {
     networkBlockingEnabled: false,
     cosmeticFilteringEnabled: false
   });
-  await syncNetworkRulesetState(false);
+  await syncNetworkRulesetState(false, surrogatesEnabled);
   await chrome.alarms.create(QUICK_PAUSE_ALARM_NAME, { when: quickPause.pausedUntil });
   await refreshReleaseSafeStats({ incrementMutation: true });
 
@@ -655,6 +701,7 @@ async function getStateForDomain(currentDomain) {
     'networkBlockingEnabled',
     'cosmeticFilteringEnabled',
     'strictModeEnabled',
+    'surrogatesEnabled',
     'whitelist',
     'domainSettings',
     'quickPause'
@@ -670,6 +717,7 @@ async function getStateForDomain(currentDomain) {
     networkBlockingEnabled: data.networkBlockingEnabled ?? (data.enabled ?? true),
     cosmeticFilteringEnabled: data.cosmeticFilteringEnabled ?? (data.enabled ?? true),
     strictModeEnabled: data.strictModeEnabled ?? false,
+    surrogatesEnabled: data.surrogatesEnabled ?? true,
     whitelist,
     domainSettings,
     currentDomain: normalizedDomain,
@@ -721,6 +769,24 @@ async function setSiteCosmetic(domain, enabled) {
   await chrome.storage.local.set({ domainSettings });
   await refreshReleaseSafeStats({ incrementMutation: true });
   return { domain, settings: current };
+}
+
+async function setSurrogatesEnabled(enabled) {
+  const data = await chrome.storage.local.get([
+    'surrogatesEnabled',
+    'enabled',
+    'networkBlockingEnabled'
+  ]);
+  const currentValue = data.surrogatesEnabled ?? true;
+  const effectiveNetworkBlockingEnabled = data.networkBlockingEnabled ?? (data.enabled ?? true);
+
+  if (currentValue !== enabled) {
+    await chrome.storage.local.set({ surrogatesEnabled: enabled });
+    await refreshReleaseSafeStats({ incrementMutation: true });
+  }
+
+  await syncNetworkRulesetState(effectiveNetworkBlockingEnabled, enabled);
+  return { surrogatesEnabled: enabled };
 }
 
 function createSiteIssueReportId() {
@@ -892,6 +958,7 @@ async function handleMessage(message, sender) {
         networkBlockingEnabled: state.networkBlockingEnabled,
         cosmeticFilteringEnabled: state.cosmeticFilteringEnabled,
         strictModeEnabled: state.strictModeEnabled,
+        surrogatesEnabled: state.surrogatesEnabled,
         currentDomain: state.currentDomain,
         currentDomainSettings: state.currentDomainSettings,
         isCurrentDomainWhitelisted: state.isCurrentDomainWhitelisted,
@@ -955,6 +1022,14 @@ async function handleMessage(message, sender) {
       }
 
       return { strictModeEnabled: message.enabled };
+    }
+
+    case 'setSurrogatesEnabled': {
+      if (typeof message.enabled !== 'boolean') {
+        return { error: 'setSurrogatesEnabled requires boolean "enabled"' };
+      }
+
+      return setSurrogatesEnabled(message.enabled);
     }
 
     case 'setSiteCosmetic': {

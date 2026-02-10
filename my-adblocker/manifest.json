@@ -28,6 +28,11 @@
         "id": "annoyances",
         "enabled": true,
         "path": "rules/annoyances.json"
+      },
+      {
+        "id": "surrogates",
+        "enabled": true,
+        "path": "rules/surrogates.json"
       }
     ]
   },
@@ -47,5 +52,19 @@
     "default_title": "My Adblocker",
     "default_popup": "popup/popup.html"
   },
-  "web_accessible_resources": []
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "surrogates/forbes-adblock.v1.js",
+        "surrogates/sourceforge-adblock.v1.js"
+      ],
+      "matches": [
+        "*://forbes.com/*",
+        "*://*.forbes.com/*",
+        "*://sourceforge.net/*",
+        "*://*.sourceforge.net/*"
+      ],
+      "use_dynamic_url": true
+    }
+  ]
 }

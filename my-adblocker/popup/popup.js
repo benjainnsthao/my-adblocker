@@ -9,6 +9,7 @@ let pauseTicker = null;
 const elements = {
   status: document.getElementById('status'),
   globalToggle: document.getElementById('global-toggle'),
+  surrogateToggle: document.getElementById('surrogate-toggle'),
   domain: document.getElementById('current-domain'),
   whitelistToggle: document.getElementById('whitelist-toggle'),
   tabCounter: document.getElementById('tab-counter'),
@@ -162,6 +163,8 @@ function render() {
 
   elements.globalToggle.checked = popupState.enabled ?? true;
   elements.globalToggle.disabled = state.isBusy;
+  elements.surrogateToggle.checked = popupState.surrogatesEnabled ?? true;
+  elements.surrogateToggle.disabled = state.isBusy;
 
   elements.domain.textContent = currentDomain || 'Unavailable on this page';
 
@@ -228,6 +231,21 @@ async function onGlobalToggleChange() {
   });
 }
 
+async function onSurrogateToggleChange() {
+  const nextEnabled = elements.surrogateToggle.checked;
+
+  await withBusy(async () => {
+    await sendMessage({ type: 'setSurrogatesEnabled', enabled: nextEnabled });
+    await refreshState();
+    setStatus(
+      nextEnabled
+        ? 'Surrogate fixes enabled.'
+        : 'Surrogate fixes disabled immediately.',
+      'success'
+    );
+  });
+}
+
 async function onWhitelistToggleClick() {
   const domain = getCurrentDomain();
   if (!domain) {
@@ -282,6 +300,7 @@ async function onReportIssueClick() {
 
 function bindEvents() {
   elements.globalToggle.addEventListener('change', onGlobalToggleChange);
+  elements.surrogateToggle.addEventListener('change', onSurrogateToggleChange);
   elements.whitelistToggle.addEventListener('click', onWhitelistToggleClick);
   elements.quickPause.addEventListener('click', onQuickPauseClick);
   elements.reportIssue.addEventListener('click', onReportIssueClick);
