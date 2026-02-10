@@ -1,11 +1,12 @@
 const CORE_RULESET_IDS = ['ads', 'tracking', 'annoyances'];
 const SURROGATE_RULESET_ID = 'surrogates';
 const ALL_RULESET_IDS = [...CORE_RULESET_IDS, SURROGATE_RULESET_ID];
-const STORAGE_SCHEMA_VERSION = 1;
+const STORAGE_SCHEMA_VERSION = 2;
 const WHITELIST_RULE_ID_START = 5000;
 const WHITELIST_RULE_ID_END = 5999;
 const MAX_WHITELIST_ENTRIES = WHITELIST_RULE_ID_END - WHITELIST_RULE_ID_START + 1;
 const MAX_DOMAIN_SETTINGS_ENTRIES = 500;
+const MAX_SITE_FIX_ENTRIES = 200;
 const MAX_ERROR_LOG_ENTRIES = 50;
 const MAX_ERROR_CONTEXT_LENGTH = 80;
 const MAX_ERROR_MESSAGE_LENGTH = 500;
@@ -19,6 +20,21 @@ const QUICK_PAUSE_ALARM_NAME = 'quickPauseResume';
 const tabBlockedCounts = new Map();
 
 const WHITELIST_FRAME_RESOURCE_TYPES = ['main_frame', 'sub_frame'];
+const WHITELIST_RULE_PRIORITY = 6;
+const SURROGATE_MODE_DEFAULT = 'safe';
+const SURROGATE_MODE_VALUES = ['off', 'safe', 'strict'];
+const DEFAULT_SITE_FIXES = Object.freeze({
+  'forbes.com': Object.freeze({
+    surrogates: true,
+    antiDetection: false,
+    strict: false
+  }),
+  'sourceforge.net': Object.freeze({
+    surrogates: true,
+    antiDetection: false,
+    strict: false
+  })
+});
 
 function isObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -324,6 +340,89 @@ function sanitizeDomainSettings(rawDomainSettings) {
   return normalized;
 }
 
+function sanitizeSurrogateMode(rawMode) {
+  if (typeof rawMode !== 'string') return SURROGATE_MODE_DEFAULT;
+  const normalized = rawMode.trim().toLowerCase();
+  return SURROGATE_MODE_VALUES.includes(normalized) ? normalized : SURROGATE_MODE_DEFAULT;
+}
+
+function sanitizeSiteFixes(rawSiteFixes) {
+  if (!isObject(rawSiteFixes)) return {};
+
+  const normalized = {};
+  const seen = new Set();
+
+  for (const [rawDomain, rawConfig] of Object.entries(rawSiteFixes)) {
+    if (Object.keys(normalized).length >= MAX_SITE_FIX_ENTRIES) {
+      break;
+    }
+
+    const domain = normalizeDomain(rawDomain);
+    if (!domain || !isObject(rawConfig) || seen.has(domain)) continue;
+    seen.add(domain);
+
+    const nextConfig = {};
+    if (typeof rawConfig.surrogates === 'boolean') {
+      nextConfig.surrogates = rawConfig.surrogates;
+    }
+    if (typeof rawConfig.antiDetection === 'boolean') {
+      nextConfig.antiDetection = rawConfig.antiDetection;
+    }
+    if (typeof rawConfig.strict === 'boolean') {
+      nextConfig.strict = rawConfig.strict;
+    }
+    if (Object.keys(nextConfig).length === 0) {
+      continue;
+    }
+
+    normalized[domain] = nextConfig;
+  }
+
+  return normalized;
+}
+
+function getDomainHierarchy(domain) {
+  if (!domain) return [];
+
+  const hierarchy = [];
+  let current = domain;
+  while (current) {
+    hierarchy.push(current);
+    const dotIndex = current.indexOf('.');
+    if (dotIndex === -1) break;
+    current = current.slice(dotIndex + 1);
+  }
+
+  return hierarchy;
+}
+
+function getDomainValueForHost(domainMap, domain) {
+  if (!isObject(domainMap) || !domain) return null;
+
+  for (const candidate of getDomainHierarchy(domain)) {
+    if (Object.prototype.hasOwnProperty.call(domainMap, candidate)) {
+      return domainMap[candidate];
+    }
+  }
+
+  return null;
+}
+
+function isDomainWhitelisted(domain, whitelist) {
+  if (!domain || !Array.isArray(whitelist)) return false;
+  const normalizedWhitelist = new Set(whitelist);
+  for (const candidate of getDomainHierarchy(domain)) {
+    if (normalizedWhitelist.has(candidate)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function getEffectiveSurrogatesEnabled(surrogatesEnabled, surrogateMode) {
+  return surrogatesEnabled && sanitizeSurrogateMode(surrogateMode) !== 'off';
+}
+
 function getDomainFromSender(sender) {
   const candidate = sender?.tab?.url || sender?.url;
   if (!candidate) return null;
@@ -343,17 +442,18 @@ function resolveTabId(rawTabId, sender) {
 
 async function refreshReleaseSafeStats(options = {}) {
   const incrementMutation = options.incrementMutation === true;
-  const data = await chrome.storage.local.get(['stats', 'whitelist', 'domainSettings']);
+  const data = await chrome.storage.local.get(['stats', 'whitelist', 'domainSettings', 'siteFixes']);
   const stats = sanitizeStats(data.stats);
   const whitelist = sanitizeWhitelist(data.whitelist);
   const domainSettings = sanitizeDomainSettings(data.domainSettings);
+  const siteFixes = sanitizeSiteFixes(data.siteFixes);
 
   const nextStats = {
     releaseSafe: {
       settingsMutationCount:
         stats.releaseSafe.settingsMutationCount + (incrementMutation ? 1 : 0),
       whitelistEntryCount: whitelist.length,
-      domainOverrideCount: Object.keys(domainSettings).length,
+      domainOverrideCount: Object.keys(domainSettings).length + Object.keys(siteFixes).length,
       lastConfigChange: incrementMutation ? nowIsoString() : stats.releaseSafe.lastConfigChange
     },
     debugApprox: stats.debugApprox
@@ -365,6 +465,9 @@ async function refreshReleaseSafeStats(options = {}) {
   }
   if (!deepEqual(data.domainSettings, domainSettings)) {
     updates.domainSettings = domainSettings;
+  }
+  if (!deepEqual(data.siteFixes, siteFixes)) {
+    updates.siteFixes = siteFixes;
   }
   if (!deepEqual(data.stats, nextStats)) {
     updates.stats = nextStats;
@@ -427,6 +530,17 @@ async function migrateStorage() {
     updates.surrogatesEnabled = surrogatesEnabled;
   }
 
+  const antiDetectionEnabled =
+    typeof current.antiDetectionEnabled === 'boolean' ? current.antiDetectionEnabled : true;
+  if (current.antiDetectionEnabled !== antiDetectionEnabled) {
+    updates.antiDetectionEnabled = antiDetectionEnabled;
+  }
+
+  const surrogateMode = sanitizeSurrogateMode(current.surrogateMode);
+  if (current.surrogateMode !== surrogateMode) {
+    updates.surrogateMode = surrogateMode;
+  }
+
   const whitelist = sanitizeWhitelist(current.whitelist);
   if (!deepEqual(current.whitelist, whitelist)) {
     updates.whitelist = whitelist;
@@ -435,6 +549,14 @@ async function migrateStorage() {
   const domainSettings = sanitizeDomainSettings(current.domainSettings);
   if (!deepEqual(current.domainSettings, domainSettings)) {
     updates.domainSettings = domainSettings;
+  }
+
+  const siteFixes = sanitizeSiteFixes({
+    ...DEFAULT_SITE_FIXES,
+    ...(isObject(current.siteFixes) ? current.siteFixes : {})
+  });
+  if (!deepEqual(current.siteFixes, siteFixes)) {
+    updates.siteFixes = siteFixes;
   }
 
   const stats = sanitizeStats(current.stats);
@@ -478,13 +600,18 @@ async function applyPersistedRulesetState() {
   const data = await chrome.storage.local.get([
     'enabled',
     'networkBlockingEnabled',
-    'surrogatesEnabled'
+    'surrogatesEnabled',
+    'surrogateMode'
   ]);
   const enabled = data.enabled ?? true;
   const networkBlockingEnabled = data.networkBlockingEnabled ?? enabled;
   const surrogatesEnabled = data.surrogatesEnabled ?? true;
+  const surrogateMode = sanitizeSurrogateMode(data.surrogateMode);
 
-  await syncNetworkRulesetState(networkBlockingEnabled, surrogatesEnabled);
+  await syncNetworkRulesetState(
+    networkBlockingEnabled,
+    getEffectiveSurrogatesEnabled(surrogatesEnabled, surrogateMode)
+  );
 }
 
 function buildRulesetStateUpdate(networkBlockingEnabled, surrogatesEnabled) {
@@ -533,7 +660,7 @@ async function updateWhitelistRules(whitelist) {
   const effectiveWhitelist = whitelist.slice(0, MAX_WHITELIST_ENTRIES);
   const addRules = effectiveWhitelist.map((domain, index) => ({
     id: WHITELIST_RULE_ID_START + index,
-    priority: 5,
+    priority: WHITELIST_RULE_PRIORITY,
     action: { type: 'allowAllRequests' },
     condition: {
       requestDomains: [domain],
@@ -574,9 +701,13 @@ async function setEnabled(enabled, options = {}) {
     cosmeticFilteringEnabled: enabled
   });
 
-  const state = await chrome.storage.local.get('surrogatesEnabled');
+  const state = await chrome.storage.local.get(['surrogatesEnabled', 'surrogateMode']);
   const surrogatesEnabled = state.surrogatesEnabled ?? true;
-  await syncNetworkRulesetState(enabled, surrogatesEnabled);
+  const surrogateMode = sanitizeSurrogateMode(state.surrogateMode);
+  await syncNetworkRulesetState(
+    enabled,
+    getEffectiveSurrogatesEnabled(surrogatesEnabled, surrogateMode)
+  );
 
   if (incrementMutation) {
     await refreshReleaseSafeStats({ incrementMutation: true });
@@ -586,9 +717,10 @@ async function setEnabled(enabled, options = {}) {
 async function resumeQuickPause(options = {}) {
   const force = options.force === true;
   const incrementMutation = options.incrementMutation !== false;
-  const data = await chrome.storage.local.get(['quickPause', 'surrogatesEnabled']);
+  const data = await chrome.storage.local.get(['quickPause', 'surrogatesEnabled', 'surrogateMode']);
   const quickPause = sanitizeQuickPause(data.quickPause);
   const surrogatesEnabled = data.surrogatesEnabled ?? true;
+  const surrogateMode = sanitizeSurrogateMode(data.surrogateMode);
 
   if (!quickPause) {
     await chrome.alarms.clear(QUICK_PAUSE_ALARM_NAME);
@@ -610,7 +742,10 @@ async function resumeQuickPause(options = {}) {
     cosmeticFilteringEnabled: quickPause.resumeCosmeticFilteringEnabled
   });
   await chrome.alarms.clear(QUICK_PAUSE_ALARM_NAME);
-  await syncNetworkRulesetState(quickPause.resumeNetworkBlockingEnabled, surrogatesEnabled);
+  await syncNetworkRulesetState(
+    quickPause.resumeNetworkBlockingEnabled,
+    getEffectiveSurrogatesEnabled(surrogatesEnabled, surrogateMode)
+  );
   if (incrementMutation) {
     await refreshReleaseSafeStats({ incrementMutation: true });
   }
@@ -664,12 +799,14 @@ async function startQuickPause() {
     'enabled',
     'networkBlockingEnabled',
     'cosmeticFilteringEnabled',
-    'surrogatesEnabled'
+    'surrogatesEnabled',
+    'surrogateMode'
   ]);
   const enabled = data.enabled ?? true;
   const networkBlockingEnabled = data.networkBlockingEnabled ?? enabled;
   const cosmeticFilteringEnabled = data.cosmeticFilteringEnabled ?? enabled;
   const surrogatesEnabled = data.surrogatesEnabled ?? true;
+  const surrogateMode = sanitizeSurrogateMode(data.surrogateMode);
 
   if (!enabled && !networkBlockingEnabled && !cosmeticFilteringEnabled) {
     return { error: 'Quick pause requires blocker to be enabled' };
@@ -688,7 +825,10 @@ async function startQuickPause() {
     networkBlockingEnabled: false,
     cosmeticFilteringEnabled: false
   });
-  await syncNetworkRulesetState(false, surrogatesEnabled);
+  await syncNetworkRulesetState(
+    false,
+    getEffectiveSurrogatesEnabled(surrogatesEnabled, surrogateMode)
+  );
   await chrome.alarms.create(QUICK_PAUSE_ALARM_NAME, { when: quickPause.pausedUntil });
   await refreshReleaseSafeStats({ incrementMutation: true });
 
@@ -702,14 +842,30 @@ async function getStateForDomain(currentDomain) {
     'cosmeticFilteringEnabled',
     'strictModeEnabled',
     'surrogatesEnabled',
+    'antiDetectionEnabled',
+    'surrogateMode',
     'whitelist',
     'domainSettings',
+    'siteFixes',
     'quickPause'
   ]);
 
   const domainSettings = sanitizeDomainSettings(data.domainSettings);
+  const siteFixes = sanitizeSiteFixes(data.siteFixes);
   const whitelist = sanitizeWhitelist(data.whitelist);
   const normalizedDomain = normalizeDomain(currentDomain);
+  const surrogateMode = sanitizeSurrogateMode(data.surrogateMode);
+  const surrogatesEnabled = data.surrogatesEnabled ?? true;
+  const antiDetectionEnabled = data.antiDetectionEnabled ?? true;
+  const isCurrentDomainWhitelisted = normalizedDomain
+    ? isDomainWhitelisted(normalizedDomain, whitelist)
+    : false;
+  const currentDomainSettings = normalizedDomain
+    ? getDomainValueForHost(domainSettings, normalizedDomain)
+    : null;
+  const currentSiteFix = normalizedDomain && !isCurrentDomainWhitelisted
+    ? getDomainValueForHost(siteFixes, normalizedDomain)
+    : null;
   const quickPause = toQuickPauseStatus(data.quickPause);
 
   return {
@@ -717,12 +873,19 @@ async function getStateForDomain(currentDomain) {
     networkBlockingEnabled: data.networkBlockingEnabled ?? (data.enabled ?? true),
     cosmeticFilteringEnabled: data.cosmeticFilteringEnabled ?? (data.enabled ?? true),
     strictModeEnabled: data.strictModeEnabled ?? false,
-    surrogatesEnabled: data.surrogatesEnabled ?? true,
+    surrogatesEnabled,
+    antiDetectionEnabled,
+    surrogateMode,
+    effectiveSurrogatesEnabled: getEffectiveSurrogatesEnabled(surrogatesEnabled, surrogateMode),
     whitelist,
     domainSettings,
+    siteFixes,
     currentDomain: normalizedDomain,
-    currentDomainSettings: normalizedDomain ? domainSettings[normalizedDomain] || null : null,
-    isCurrentDomainWhitelisted: normalizedDomain ? whitelist.includes(normalizedDomain) : false,
+    currentDomainSettings,
+    currentSiteFix,
+    isCurrentDomainWhitelisted,
+    isCurrentDomainSurrogateBypassed:
+      isCurrentDomainWhitelisted || currentSiteFix?.surrogates === false,
     quickPause
   };
 }
@@ -771,22 +934,130 @@ async function setSiteCosmetic(domain, enabled) {
   return { domain, settings: current };
 }
 
-async function setSurrogatesEnabled(enabled) {
+async function setAntiDetectionEnabled(enabled) {
+  const data = await chrome.storage.local.get('antiDetectionEnabled');
+  const currentValue = data.antiDetectionEnabled ?? true;
+
+  if (currentValue !== enabled) {
+    await chrome.storage.local.set({ antiDetectionEnabled: enabled });
+    await refreshReleaseSafeStats({ incrementMutation: true });
+  }
+
+  return { antiDetectionEnabled: enabled };
+}
+
+async function setSurrogateMode(mode) {
+  const normalizedMode = sanitizeSurrogateMode(mode);
   const data = await chrome.storage.local.get([
+    'surrogateMode',
     'surrogatesEnabled',
     'enabled',
     'networkBlockingEnabled'
   ]);
+  const currentMode = sanitizeSurrogateMode(data.surrogateMode);
+  const surrogatesEnabled = data.surrogatesEnabled ?? true;
+  const effectiveNetworkBlockingEnabled = data.networkBlockingEnabled ?? (data.enabled ?? true);
+  const effectiveSurrogateRulesEnabled = getEffectiveSurrogatesEnabled(
+    surrogatesEnabled,
+    normalizedMode
+  );
+
+  if (currentMode !== normalizedMode) {
+    await chrome.storage.local.set({ surrogateMode: normalizedMode });
+    await refreshReleaseSafeStats({ incrementMutation: true });
+  }
+
+  await syncNetworkRulesetState(effectiveNetworkBlockingEnabled, effectiveSurrogateRulesEnabled);
+  return {
+    surrogateMode: normalizedMode,
+    effectiveSurrogateRulesEnabled
+  };
+}
+
+function sanitizeSiteFixPatch(rawPatch) {
+  if (!isObject(rawPatch)) return null;
+
+  const hasKeys = Object.keys(rawPatch).length > 0;
+  const patch = {};
+  if (typeof rawPatch.surrogates === 'boolean') {
+    patch.surrogates = rawPatch.surrogates;
+  }
+  if (typeof rawPatch.antiDetection === 'boolean') {
+    patch.antiDetection = rawPatch.antiDetection;
+  }
+  if (typeof rawPatch.strict === 'boolean') {
+    patch.strict = rawPatch.strict;
+  }
+
+  if (Object.keys(patch).length === 0 && hasKeys) {
+    return null;
+  }
+
+  return patch;
+}
+
+async function setSiteFix(domain, rawPatch) {
+  const patch = sanitizeSiteFixPatch(rawPatch);
+  if (patch === null) {
+    return {
+      error: 'setSiteFix requires object "siteFix" with boolean surrogates/antiDetection/strict'
+    };
+  }
+
+  const data = await chrome.storage.local.get('siteFixes');
+  const siteFixes = sanitizeSiteFixes(data.siteFixes);
+  const hasExistingDomain = isObject(siteFixes[domain]);
+
+  if (Object.keys(patch).length === 0) {
+    if (!hasExistingDomain) {
+      return { domain, siteFix: null };
+    }
+    delete siteFixes[domain];
+    await chrome.storage.local.set({ siteFixes });
+    await refreshReleaseSafeStats({ incrementMutation: true });
+    return { domain, siteFix: null };
+  }
+
+  if (!hasExistingDomain && Object.keys(siteFixes).length >= MAX_SITE_FIX_ENTRIES) {
+    return {
+      error: `setSiteFix rejected: siteFixes limit (${MAX_SITE_FIX_ENTRIES}) reached`
+    };
+  }
+
+  const nextSiteFix = {
+    ...(hasExistingDomain ? siteFixes[domain] : {}),
+    ...patch
+  };
+  siteFixes[domain] = nextSiteFix;
+  await chrome.storage.local.set({ siteFixes });
+  await refreshReleaseSafeStats({ incrementMutation: true });
+  return { domain, siteFix: nextSiteFix };
+}
+
+async function setSurrogatesEnabled(enabled) {
+  const data = await chrome.storage.local.get([
+    'surrogatesEnabled',
+    'enabled',
+    'networkBlockingEnabled',
+    'surrogateMode'
+  ]);
   const currentValue = data.surrogatesEnabled ?? true;
   const effectiveNetworkBlockingEnabled = data.networkBlockingEnabled ?? (data.enabled ?? true);
+  const surrogateMode = sanitizeSurrogateMode(data.surrogateMode);
 
   if (currentValue !== enabled) {
     await chrome.storage.local.set({ surrogatesEnabled: enabled });
     await refreshReleaseSafeStats({ incrementMutation: true });
   }
 
-  await syncNetworkRulesetState(effectiveNetworkBlockingEnabled, enabled);
-  return { surrogatesEnabled: enabled };
+  await syncNetworkRulesetState(
+    effectiveNetworkBlockingEnabled,
+    getEffectiveSurrogatesEnabled(enabled, surrogateMode)
+  );
+  return {
+    surrogatesEnabled: enabled,
+    effectiveSurrogateRulesEnabled: getEffectiveSurrogatesEnabled(enabled, surrogateMode)
+  };
 }
 
 function createSiteIssueReportId() {
@@ -959,9 +1230,14 @@ async function handleMessage(message, sender) {
         cosmeticFilteringEnabled: state.cosmeticFilteringEnabled,
         strictModeEnabled: state.strictModeEnabled,
         surrogatesEnabled: state.surrogatesEnabled,
+        antiDetectionEnabled: state.antiDetectionEnabled,
+        surrogateMode: state.surrogateMode,
+        effectiveSurrogatesEnabled: state.effectiveSurrogatesEnabled,
         currentDomain: state.currentDomain,
         currentDomainSettings: state.currentDomainSettings,
+        currentSiteFix: state.currentSiteFix,
         isCurrentDomainWhitelisted: state.isCurrentDomainWhitelisted,
+        isCurrentDomainSurrogateBypassed: state.isCurrentDomainSurrogateBypassed,
         quickPause: state.quickPause,
         stats
       };
@@ -1024,6 +1300,27 @@ async function handleMessage(message, sender) {
       return { strictModeEnabled: message.enabled };
     }
 
+    case 'setAntiDetectionEnabled': {
+      if (typeof message.enabled !== 'boolean') {
+        return { error: 'setAntiDetectionEnabled requires boolean "enabled"' };
+      }
+
+      return setAntiDetectionEnabled(message.enabled);
+    }
+
+    case 'setSurrogateMode': {
+      if (typeof message.mode !== 'string') {
+        return { error: 'setSurrogateMode requires string "mode"' };
+      }
+
+      const normalizedMode = sanitizeSurrogateMode(message.mode);
+      if (normalizedMode !== message.mode.trim().toLowerCase()) {
+        return { error: 'setSurrogateMode mode must be one of: off, safe, strict' };
+      }
+
+      return setSurrogateMode(normalizedMode);
+    }
+
     case 'setSurrogatesEnabled': {
       if (typeof message.enabled !== 'boolean') {
         return { error: 'setSurrogatesEnabled requires boolean "enabled"' };
@@ -1043,6 +1340,15 @@ async function handleMessage(message, sender) {
       }
 
       return setSiteCosmetic(domain, message.enabled);
+    }
+
+    case 'setSiteFix': {
+      const domain = normalizeDomain(message.domain) || getDomainFromSender(sender);
+      if (!domain) {
+        return { error: 'setSiteFix requires a valid domain' };
+      }
+
+      return setSiteFix(domain, message.siteFix);
     }
 
     case 'addToWhitelist': {
