@@ -17,6 +17,7 @@ const elements = {
   lifetimeCounter: document.getElementById('lifetime-counter'),
   quickPause: document.getElementById('quick-pause'),
   pauseStatus: document.getElementById('pause-status'),
+  rollbackFeatures: document.getElementById('rollback-features'),
   reportIssue: document.getElementById('report-issue')
 };
 
@@ -187,6 +188,15 @@ function render() {
     ? `Paused (${formatRemainingSeconds(Math.max(0, quickPause.pausedUntil - Date.now()))})`
     : 'Quick Pause (30s)';
 
+  const rollbackAlreadyApplied =
+    popupState.surrogatesEnabled === false &&
+    popupState.antiDetectionEnabled === false &&
+    popupState.surrogateMode === 'off';
+  elements.rollbackFeatures.disabled = state.isBusy || rollbackAlreadyApplied;
+  elements.rollbackFeatures.textContent = rollbackAlreadyApplied
+    ? 'Rollback Applied'
+    : 'Emergency Rollback';
+
   const hasUrl = typeof state.activeTab?.url === 'string' && state.activeTab.url.length > 0;
   elements.reportIssue.disabled = state.isBusy || !domainAvailable || !hasUrl;
 
@@ -277,6 +287,19 @@ async function onQuickPauseClick() {
   });
 }
 
+async function onRollbackFeaturesClick() {
+  await withBusy(async () => {
+    const result = await sendMessage({ type: 'runFeatureRollback' });
+    await refreshState();
+    setStatus(
+      result.rollbackApplied
+        ? 'Rollback applied. Surrogate and anti-detection features are off.'
+        : 'Rollback already active.',
+      'success'
+    );
+  });
+}
+
 async function onReportIssueClick() {
   const domain = getCurrentDomain();
   if (!domain) {
@@ -303,6 +326,7 @@ function bindEvents() {
   elements.surrogateToggle.addEventListener('change', onSurrogateToggleChange);
   elements.whitelistToggle.addEventListener('click', onWhitelistToggleClick);
   elements.quickPause.addEventListener('click', onQuickPauseClick);
+  elements.rollbackFeatures.addEventListener('click', onRollbackFeaturesClick);
   elements.reportIssue.addEventListener('click', onReportIssueClick);
 }
 

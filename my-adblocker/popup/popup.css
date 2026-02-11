@@ -217,6 +217,15 @@ input[type='checkbox']:disabled {
   border-color: var(--warn-strong);
 }
 
+.button.danger {
+  background: rgba(239, 68, 68, 0.26);
+  border-color: rgba(248, 113, 113, 0.5);
+}
+
+.button.danger:hover:not(:disabled) {
+  border-color: rgba(248, 113, 113, 0.8);
+}
+
 .button:disabled {
   opacity: 0.6;
   cursor: not-allowed;

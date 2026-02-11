@@ -15,6 +15,9 @@ const MAX_REPORT_URL_LENGTH = 2048;
 const MAX_REPORT_TITLE_LENGTH = 160;
 const MAX_REPORT_NOTE_LENGTH = 500;
 const MAX_SITE_ISSUE_REPORT_ENTRIES = 100;
+const MAX_BREAKAGE_REPORT_ENTRIES = 100;
+const MAX_BREAKAGE_CASE_ID_LENGTH = 32;
+const MAX_ERROR_VALUE_PREVIEW_LENGTH = 120;
 const QUICK_PAUSE_DURATION_MS = 30 * 1000;
 const QUICK_PAUSE_ALARM_NAME = 'quickPauseResume';
 const tabBlockedCounts = new Map();
@@ -23,6 +26,8 @@ const WHITELIST_FRAME_RESOURCE_TYPES = ['main_frame', 'sub_frame'];
 const WHITELIST_RULE_PRIORITY = 6;
 const SURROGATE_MODE_DEFAULT = 'safe';
 const SURROGATE_MODE_VALUES = ['off', 'safe', 'strict'];
+const SITE_FIX_PATCH_KEYS = ['surrogates', 'antiDetection', 'strict'];
+const BREAKAGE_MITIGATION_VALUES = ['surrogate', 'exception', 'no-fix', 'needs-investigation'];
 const DEFAULT_SITE_FIXES = Object.freeze({
   'forbes.com': Object.freeze({
     surrogates: true,
@@ -58,6 +63,22 @@ function sanitizeText(value, fallback, maxLength) {
   const trimmed = value.trim();
   if (!trimmed) return fallback;
   return trimmed.slice(0, maxLength);
+}
+
+function formatInvalidValue(value) {
+  let candidate = '';
+
+  if (typeof value === 'string') {
+    candidate = value;
+  } else {
+    try {
+      candidate = JSON.stringify(value);
+    } catch (_) {
+      candidate = String(value);
+    }
+  }
+
+  return sanitizeText(candidate, 'invalid', MAX_ERROR_VALUE_PREVIEW_LENGTH);
 }
 
 function createDefaultStats() {
@@ -154,6 +175,52 @@ function sanitizeReportUrl(rawUrl) {
   } catch (_) {
     return null;
   }
+}
+
+function sanitizeBreakageCaseId(rawCaseId) {
+  const caseId = sanitizeText(rawCaseId, '', MAX_BREAKAGE_CASE_ID_LENGTH);
+  if (!caseId) return null;
+
+  const normalized = caseId.toUpperCase();
+  return /^[A-Z]{2,10}-[0-9]{1,6}$/.test(normalized) ? normalized : null;
+}
+
+function normalizeBreakageMitigation(rawMitigation) {
+  if (typeof rawMitigation !== 'string') return null;
+  const normalized = rawMitigation.trim().toLowerCase();
+  return BREAKAGE_MITIGATION_VALUES.includes(normalized) ? normalized : null;
+}
+
+function sanitizeBreakageMitigation(rawMitigation) {
+  return normalizeBreakageMitigation(rawMitigation) || 'needs-investigation';
+}
+
+function sanitizeBreakageReports(rawReports) {
+  if (!Array.isArray(rawReports)) return [];
+
+  return rawReports
+    .slice(-MAX_BREAKAGE_REPORT_ENTRIES)
+    .map((entry) => {
+      if (!isObject(entry)) return null;
+
+      const caseId = sanitizeBreakageCaseId(entry.caseId);
+      const domain = normalizeDomain(entry.domain);
+      const detectorUrl = sanitizeReportUrl(entry.detectorUrl);
+      const timestamp = Number.isFinite(entry.timestamp)
+        ? Math.max(0, Math.trunc(entry.timestamp))
+        : Date.now();
+
+      if (!caseId || !domain || !detectorUrl) return null;
+
+      return {
+        caseId,
+        domain,
+        detectorUrl,
+        mitigation: sanitizeBreakageMitigation(entry.mitigation),
+        timestamp
+      };
+    })
+    .filter(Boolean);
 }
 
 function sanitizeSiteIssueReports(rawReports) {
@@ -440,6 +507,103 @@ function resolveTabId(rawTabId, sender) {
   return null;
 }
 
+function getSenderUrl(sender) {
+  const candidate = sender?.tab?.url || sender?.url;
+  return typeof candidate === 'string' ? candidate : null;
+}
+
+function getUrlIssue(rawUrl) {
+  if (typeof rawUrl !== 'string') return null;
+  const value = rawUrl.trim();
+  if (!value) return null;
+
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return null;
+    }
+    return `unsupported URL protocol "${parsed.protocol}"`;
+  } catch (_) {
+    return 'malformed URL';
+  }
+}
+
+function resolveDomainForAction(rawDomain, sender, actionName) {
+  if (rawDomain !== undefined && rawDomain !== null) {
+    const normalized = normalizeDomain(rawDomain);
+    if (normalized) {
+      return { domain: normalized };
+    }
+
+    return {
+      error: `${actionName} rejected: malformed domain "${formatInvalidValue(rawDomain)}"`
+    };
+  }
+
+  const senderDomain = getDomainFromSender(sender);
+  if (senderDomain) {
+    return { domain: senderDomain };
+  }
+
+  const senderUrl = getSenderUrl(sender);
+  const urlIssue = getUrlIssue(senderUrl);
+  if (urlIssue) {
+    return {
+      error: `${actionName} requires an http(s) page URL; ${urlIssue}`
+    };
+  }
+
+  return { error: `${actionName} requires a valid domain` };
+}
+
+function resolveHttpUrlForAction(rawUrl, sender, actionName, fieldName) {
+  if (rawUrl !== undefined && rawUrl !== null) {
+    const normalized = sanitizeReportUrl(rawUrl);
+    if (normalized) {
+      return { url: normalized };
+    }
+
+    return {
+      error: `${actionName} rejected: invalid ${fieldName}; expected http(s) URL`
+    };
+  }
+
+  const senderUrl = getSenderUrl(sender);
+  const normalizedSenderUrl = sanitizeReportUrl(senderUrl);
+  if (normalizedSenderUrl) {
+    return { url: normalizedSenderUrl };
+  }
+
+  const urlIssue = getUrlIssue(senderUrl);
+  if (urlIssue) {
+    return {
+      error: `${actionName} requires an http(s) ${fieldName}; ${urlIssue}`
+    };
+  }
+
+  return { error: `${actionName} requires a valid http(s) ${fieldName}` };
+}
+
+function validateBooleanPayload(actionName, rawValue, keyName = 'enabled') {
+  if (typeof rawValue !== 'boolean') {
+    return { error: `${actionName} requires boolean "${keyName}"` };
+  }
+  return { value: rawValue };
+}
+
+function validateSurrogateModePayload(rawMode) {
+  if (typeof rawMode !== 'string') {
+    return { error: 'setSurrogateMode requires string "mode"' };
+  }
+
+  const normalizedMode = sanitizeSurrogateMode(rawMode);
+  if (normalizedMode !== rawMode.trim().toLowerCase()) {
+    return { error: 'setSurrogateMode mode must be one of: off, safe, strict' };
+  }
+
+  return { mode: normalizedMode };
+}
+
 async function refreshReleaseSafeStats(options = {}) {
   const incrementMutation = options.incrementMutation === true;
   const data = await chrome.storage.local.get(['stats', 'whitelist', 'domainSettings', 'siteFixes']);
@@ -577,6 +741,11 @@ async function migrateStorage() {
   const siteIssueReports = sanitizeSiteIssueReports(current.siteIssueReports);
   if (!deepEqual(current.siteIssueReports, siteIssueReports)) {
     updates.siteIssueReports = siteIssueReports;
+  }
+
+  const breakageReports = sanitizeBreakageReports(current.breakageReports);
+  if (!deepEqual(current.breakageReports, breakageReports)) {
+    updates.breakageReports = breakageReports;
   }
 
   if (current.schemaVersion !== STORAGE_SCHEMA_VERSION) {
@@ -975,34 +1144,53 @@ async function setSurrogateMode(mode) {
 }
 
 function sanitizeSiteFixPatch(rawPatch) {
-  if (!isObject(rawPatch)) return null;
+  if (!isObject(rawPatch)) {
+    return { error: 'setSiteFix requires object "siteFix"' };
+  }
 
-  const hasKeys = Object.keys(rawPatch).length > 0;
   const patch = {};
-  if (typeof rawPatch.surrogates === 'boolean') {
-    patch.surrogates = rawPatch.surrogates;
-  }
-  if (typeof rawPatch.antiDetection === 'boolean') {
-    patch.antiDetection = rawPatch.antiDetection;
-  }
-  if (typeof rawPatch.strict === 'boolean') {
-    patch.strict = rawPatch.strict;
-  }
-
-  if (Object.keys(patch).length === 0 && hasKeys) {
-    return null;
+  for (const [key, value] of Object.entries(rawPatch)) {
+    if (!SITE_FIX_PATCH_KEYS.includes(key)) {
+      return { error: `setSiteFix rejected unknown field "${key}"` };
+    }
+    if (typeof value !== 'boolean') {
+      return { error: `setSiteFix requires boolean "${key}" when provided` };
+    }
+    patch[key] = value;
   }
 
-  return patch;
+  return { patch };
+}
+
+function validateSiteFixConfig(domain, siteFix) {
+  const hasApprovedMapping = Boolean(getDomainValueForHost(DEFAULT_SITE_FIXES, domain));
+  if (!hasApprovedMapping) {
+    return {
+      error: `setSiteFix rejected: "${domain}" has no approved surrogate mapping`
+    };
+  }
+
+  if (siteFix.antiDetection === true && siteFix.surrogates === false) {
+    return {
+      error: 'setSiteFix rejected: antiDetection cannot be true when surrogates is false'
+    };
+  }
+
+  if (siteFix.strict === true && siteFix.antiDetection !== true) {
+    return {
+      error: 'setSiteFix rejected: strict requires antiDetection to be true'
+    };
+  }
+
+  return null;
 }
 
 async function setSiteFix(domain, rawPatch) {
-  const patch = sanitizeSiteFixPatch(rawPatch);
-  if (patch === null) {
-    return {
-      error: 'setSiteFix requires object "siteFix" with boolean surrogates/antiDetection/strict'
-    };
+  const patchResult = sanitizeSiteFixPatch(rawPatch);
+  if (patchResult.error) {
+    return { error: patchResult.error };
   }
+  const patch = patchResult.patch;
 
   const data = await chrome.storage.local.get('siteFixes');
   const siteFixes = sanitizeSiteFixes(data.siteFixes);
@@ -1028,6 +1216,12 @@ async function setSiteFix(domain, rawPatch) {
     ...(hasExistingDomain ? siteFixes[domain] : {}),
     ...patch
   };
+
+  const validation = validateSiteFixConfig(domain, nextSiteFix);
+  if (validation?.error) {
+    return { error: validation.error };
+  }
+
   siteFixes[domain] = nextSiteFix;
   await chrome.storage.local.set({ siteFixes });
   await refreshReleaseSafeStats({ incrementMutation: true });
@@ -1065,19 +1259,175 @@ function createSiteIssueReportId() {
   return `${Date.now()}-${randomSuffix}`;
 }
 
-async function createSiteIssueReport(input, sender) {
-  const payload = isObject(input) ? input : {};
-  const domain =
-    normalizeDomain(payload.domain) ||
-    getDomainFromUrl(payload.url) ||
-    getDomainFromSender(sender);
-  if (!domain) {
-    return { error: 'reportSiteIssue requires a valid domain' };
+function validateBreakageMitigationInput(rawMitigation) {
+  if (rawMitigation === undefined || rawMitigation === null || rawMitigation === '') {
+    return { mitigation: 'needs-investigation' };
   }
 
-  const url = sanitizeReportUrl(payload.url) || sanitizeReportUrl(sender?.tab?.url);
-  if (!url) {
-    return { error: 'reportSiteIssue requires a valid http(s) URL' };
+  const mitigation = normalizeBreakageMitigation(rawMitigation);
+  if (!mitigation) {
+    return {
+      error:
+        'reportBreakage mitigation must be one of: surrogate, exception, no-fix, needs-investigation'
+    };
+  }
+
+  return { mitigation };
+}
+
+async function appendBreakageReport(report) {
+  const sanitizedEntries = sanitizeBreakageReports([report]);
+  const sanitizedReport = sanitizedEntries[0];
+  if (!sanitizedReport) {
+    return { error: 'reportBreakage payload failed sanitization' };
+  }
+
+  const data = await chrome.storage.local.get('breakageReports');
+  const reports = sanitizeBreakageReports(data.breakageReports);
+  reports.push(sanitizedReport);
+  const nextReports = reports.slice(-MAX_BREAKAGE_REPORT_ENTRIES);
+  await chrome.storage.local.set({ breakageReports: nextReports });
+
+  return { storedCount: nextReports.length };
+}
+
+async function createBreakageReport(input, sender) {
+  const payload = isObject(input) ? input : {};
+  const caseId = sanitizeBreakageCaseId(payload.caseId);
+  if (!caseId) {
+    return { error: 'reportBreakage requires caseId formatted like "AD-001"' };
+  }
+
+  const detectorUrlResult = resolveHttpUrlForAction(
+    payload.detectorUrl,
+    sender,
+    'reportBreakage',
+    'detectorUrl'
+  );
+  if (detectorUrlResult.error) {
+    return { error: detectorUrlResult.error };
+  }
+  const detectorUrl = detectorUrlResult.url;
+
+  let domain = null;
+  if (payload.domain !== undefined && payload.domain !== null) {
+    const domainResult = resolveDomainForAction(payload.domain, sender, 'reportBreakage');
+    if (domainResult.error) {
+      return { error: domainResult.error };
+    }
+    domain = domainResult.domain;
+  } else {
+    domain = getDomainFromUrl(detectorUrl) || getDomainFromSender(sender);
+  }
+
+  if (!domain) {
+    return { error: 'reportBreakage requires a valid domain' };
+  }
+
+  const mitigationResult = validateBreakageMitigationInput(payload.mitigation);
+  if (mitigationResult.error) {
+    return { error: mitigationResult.error };
+  }
+
+  const result = await appendBreakageReport({
+    caseId,
+    domain,
+    detectorUrl,
+    mitigation: mitigationResult.mitigation,
+    timestamp: Date.now()
+  });
+  if (result.error) {
+    return { error: result.error };
+  }
+
+  return {
+    success: true,
+    caseId,
+    storedCount: result.storedCount
+  };
+}
+
+function buildRollbackSiteFixes(rawSiteFixes) {
+  const currentSiteFixes = sanitizeSiteFixes(rawSiteFixes);
+  const nextSiteFixes = {};
+
+  for (const [domain, config] of Object.entries(currentSiteFixes)) {
+    nextSiteFixes[domain] = {
+      ...config,
+      antiDetection: false,
+      strict: false
+    };
+  }
+
+  return nextSiteFixes;
+}
+
+async function runFeatureRollback() {
+  const data = await chrome.storage.local.get([
+    'enabled',
+    'networkBlockingEnabled',
+    'surrogatesEnabled',
+    'antiDetectionEnabled',
+    'surrogateMode',
+    'siteFixes'
+  ]);
+  const effectiveNetworkBlockingEnabled = data.networkBlockingEnabled ?? (data.enabled ?? true);
+  const nextSiteFixes = buildRollbackSiteFixes(data.siteFixes);
+  const updates = {};
+
+  if ((data.surrogatesEnabled ?? true) !== false) {
+    updates.surrogatesEnabled = false;
+  }
+  if ((data.antiDetectionEnabled ?? true) !== false) {
+    updates.antiDetectionEnabled = false;
+  }
+  if (sanitizeSurrogateMode(data.surrogateMode) !== 'off') {
+    updates.surrogateMode = 'off';
+  }
+  if (!deepEqual(data.siteFixes, nextSiteFixes)) {
+    updates.siteFixes = nextSiteFixes;
+  }
+
+  const rollbackApplied = Object.keys(updates).length > 0;
+  if (rollbackApplied) {
+    await chrome.storage.local.set(updates);
+    await refreshReleaseSafeStats({ incrementMutation: true });
+  }
+
+  await syncNetworkRulesetState(effectiveNetworkBlockingEnabled, false);
+
+  return {
+    success: true,
+    rollbackApplied,
+    surrogatesEnabled: false,
+    antiDetectionEnabled: false,
+    surrogateMode: 'off',
+    effectiveSurrogateRulesEnabled: false,
+    siteFixesTouched: Object.keys(nextSiteFixes).length
+  };
+}
+
+async function createSiteIssueReport(input, sender) {
+  const payload = isObject(input) ? input : {};
+  const urlResult = resolveHttpUrlForAction(payload.url, sender, 'reportSiteIssue', 'url');
+  if (urlResult.error) {
+    return { error: urlResult.error };
+  }
+  const url = urlResult.url;
+
+  let domain = null;
+  if (payload.domain !== undefined && payload.domain !== null) {
+    const domainResult = resolveDomainForAction(payload.domain, sender, 'reportSiteIssue');
+    if (domainResult.error) {
+      return { error: domainResult.error };
+    }
+    domain = domainResult.domain;
+  } else {
+    domain = getDomainFromUrl(url) || getDomainFromSender(sender);
+  }
+
+  if (!domain) {
+    return { error: 'reportSiteIssue requires a valid domain' };
   }
 
   const titleSource =
@@ -1255,107 +1605,114 @@ async function handleMessage(message, sender) {
     }
 
     case 'setEnabled': {
-      if (typeof message.enabled !== 'boolean') {
-        return { error: 'setEnabled requires boolean "enabled"' };
+      const enabledPayload = validateBooleanPayload('setEnabled', message.enabled);
+      if (enabledPayload.error) {
+        return { error: enabledPayload.error };
       }
 
-      await setEnabled(message.enabled, {
+      await setEnabled(enabledPayload.value, {
         incrementMutation: true,
         cancelQuickPause: true
       });
       return {
-        enabled: message.enabled,
-        networkBlockingEnabled: message.enabled,
-        cosmeticFilteringEnabled: message.enabled
+        enabled: enabledPayload.value,
+        networkBlockingEnabled: enabledPayload.value,
+        cosmeticFilteringEnabled: enabledPayload.value
       };
     }
 
     case 'setCosmeticFiltering': {
-      if (typeof message.enabled !== 'boolean') {
-        return { error: 'setCosmeticFiltering requires boolean "enabled"' };
+      const enabledPayload = validateBooleanPayload('setCosmeticFiltering', message.enabled);
+      if (enabledPayload.error) {
+        return { error: enabledPayload.error };
       }
 
       const data = await chrome.storage.local.get('cosmeticFilteringEnabled');
       const currentValue = data.cosmeticFilteringEnabled ?? true;
-      if (currentValue !== message.enabled) {
-        await chrome.storage.local.set({ cosmeticFilteringEnabled: message.enabled });
+      if (currentValue !== enabledPayload.value) {
+        await chrome.storage.local.set({ cosmeticFilteringEnabled: enabledPayload.value });
         await refreshReleaseSafeStats({ incrementMutation: true });
       }
 
-      return { cosmeticFilteringEnabled: message.enabled };
+      return { cosmeticFilteringEnabled: enabledPayload.value };
     }
 
     case 'setStrictMode': {
-      if (typeof message.enabled !== 'boolean') {
-        return { error: 'setStrictMode requires boolean "enabled"' };
+      const enabledPayload = validateBooleanPayload('setStrictMode', message.enabled);
+      if (enabledPayload.error) {
+        return { error: enabledPayload.error };
       }
 
       const data = await chrome.storage.local.get('strictModeEnabled');
       const currentValue = data.strictModeEnabled ?? false;
-      if (currentValue !== message.enabled) {
-        await chrome.storage.local.set({ strictModeEnabled: message.enabled });
+      if (currentValue !== enabledPayload.value) {
+        await chrome.storage.local.set({ strictModeEnabled: enabledPayload.value });
         await refreshReleaseSafeStats({ incrementMutation: true });
       }
 
-      return { strictModeEnabled: message.enabled };
+      return { strictModeEnabled: enabledPayload.value };
     }
 
     case 'setAntiDetectionEnabled': {
-      if (typeof message.enabled !== 'boolean') {
-        return { error: 'setAntiDetectionEnabled requires boolean "enabled"' };
+      const enabledPayload = validateBooleanPayload('setAntiDetectionEnabled', message.enabled);
+      if (enabledPayload.error) {
+        return { error: enabledPayload.error };
       }
 
-      return setAntiDetectionEnabled(message.enabled);
+      return setAntiDetectionEnabled(enabledPayload.value);
     }
 
     case 'setSurrogateMode': {
-      if (typeof message.mode !== 'string') {
-        return { error: 'setSurrogateMode requires string "mode"' };
+      const modePayload = validateSurrogateModePayload(message.mode);
+      if (modePayload.error) {
+        return { error: modePayload.error };
       }
 
-      const normalizedMode = sanitizeSurrogateMode(message.mode);
-      if (normalizedMode !== message.mode.trim().toLowerCase()) {
-        return { error: 'setSurrogateMode mode must be one of: off, safe, strict' };
-      }
-
-      return setSurrogateMode(normalizedMode);
+      return setSurrogateMode(modePayload.mode);
     }
 
     case 'setSurrogatesEnabled': {
-      if (typeof message.enabled !== 'boolean') {
-        return { error: 'setSurrogatesEnabled requires boolean "enabled"' };
+      const enabledPayload = validateBooleanPayload('setSurrogatesEnabled', message.enabled);
+      if (enabledPayload.error) {
+        return { error: enabledPayload.error };
       }
 
-      return setSurrogatesEnabled(message.enabled);
+      return setSurrogatesEnabled(enabledPayload.value);
+    }
+
+    case 'runFeatureRollback': {
+      return runFeatureRollback();
     }
 
     case 'setSiteCosmetic': {
-      if (typeof message.enabled !== 'boolean') {
-        return { error: 'setSiteCosmetic requires boolean "enabled"' };
+      const enabledPayload = validateBooleanPayload('setSiteCosmetic', message.enabled);
+      if (enabledPayload.error) {
+        return { error: enabledPayload.error };
       }
 
-      const domain = normalizeDomain(message.domain) || getDomainFromSender(sender);
-      if (!domain) {
-        return { error: 'setSiteCosmetic requires a valid domain' };
+      const domainResult = resolveDomainForAction(message.domain, sender, 'setSiteCosmetic');
+      if (domainResult.error) {
+        return { error: domainResult.error };
       }
 
-      return setSiteCosmetic(domain, message.enabled);
+      return setSiteCosmetic(domainResult.domain, enabledPayload.value);
     }
 
     case 'setSiteFix': {
-      const domain = normalizeDomain(message.domain) || getDomainFromSender(sender);
-      if (!domain) {
-        return { error: 'setSiteFix requires a valid domain' };
+      const domainResult = resolveDomainForAction(message.domain, sender, 'setSiteFix');
+      if (domainResult.error) {
+        return { error: domainResult.error };
       }
 
-      return setSiteFix(domain, message.siteFix);
+      return setSiteFix(domainResult.domain, message.siteFix);
     }
 
     case 'addToWhitelist': {
-      const domain = normalizeDomain(message.domain) || getDomainFromSender(sender);
-      if (!domain) {
-        return { error: 'addToWhitelist requires a valid domain' };
+      const domainResult = resolveDomainForAction(message.domain, sender, 'addToWhitelist');
+      if (domainResult.error) {
+        return { error: domainResult.error };
       }
+      const domain = domainResult.domain;
 
       const data = await chrome.storage.local.get('whitelist');
       const whitelist = sanitizeWhitelist(data.whitelist);
@@ -1378,10 +1735,11 @@ async function handleMessage(message, sender) {
     }
 
     case 'removeFromWhitelist': {
-      const domain = normalizeDomain(message.domain) || getDomainFromSender(sender);
-      if (!domain) {
-        return { error: 'removeFromWhitelist requires a valid domain' };
+      const domainResult = resolveDomainForAction(message.domain, sender, 'removeFromWhitelist');
+      if (domainResult.error) {
+        return { error: domainResult.error };
       }
+      const domain = domainResult.domain;
 
       const data = await chrome.storage.local.get('whitelist');
       const currentWhitelist = sanitizeWhitelist(data.whitelist);
@@ -1413,6 +1771,10 @@ async function handleMessage(message, sender) {
       return createSiteIssueReport(message, sender);
     }
 
+    case 'reportBreakage': {
+      return createBreakageReport(message, sender);
+    }
+
     case 'getStats': {
       const tabId = resolveTabId(message.tabId, sender);
       return getStatsForTab(tabId);
@@ -1428,8 +1790,18 @@ async function handleMessage(message, sender) {
       return { errorLog: sanitizeErrorLog(data.errorLog) };
     }
 
+    case 'getBreakageReports': {
+      const data = await chrome.storage.local.get('breakageReports');
+      return { breakageReports: sanitizeBreakageReports(data.breakageReports) };
+    }
+
     case 'clearErrorLog': {
       await chrome.storage.local.set({ errorLog: [] });
+      return { success: true };
+    }
+
+    case 'clearBreakageReports': {
+      await chrome.storage.local.set({ breakageReports: [] });
       return { success: true };
     }
 
